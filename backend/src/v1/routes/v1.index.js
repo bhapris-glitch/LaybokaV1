@@ -8,13 +8,14 @@
  * backend/src/v1/routes/v1.index.js
  *
  * Purpose:
- * - Centralize all V1 routes
+ * - Centralize all normal V1 API routes
  * - Keep server.js clean
- * - Register the complete V1 API surface
+ * - Keep Shopify webhook raw-body handling separate
  *
  * IMPORTANT:
- * Shopify webhook route uses express.raw().
- * server.js must mount v1.webhook.routes.js BEFORE express.json().
+ * v1.webhook.routes.js is intentionally NOT mounted here.
+ *
+ * Shopify webhooks must be mounted by server.js BEFORE express.json().
  *
  * ============================================================================
  */
@@ -44,9 +45,6 @@ const analyticsDashboardRoutes =
 
 const billingRoutes =
   require('./v1.billing.routes');
-
-const webhookRoutes =
-  require('./v1.webhook.routes');
 
 const webhookRegistrationRoutes =
   require('./v1.webhook.registration.routes');
@@ -98,26 +96,13 @@ router.use(
 
 
 // ============================================================================
-// SHOPIFY WEBHOOKS
-// ============================================================================
-//
-// NOTE:
-//
-// The actual Shopify webhook endpoint requires raw-body processing.
-//
-// server.js should mount v1.webhook.routes.js BEFORE express.json().
-//
-// The registration/status routes do not require raw-body handling.
-//
-
-router.use(
-  webhookRoutes
-);
-
-
-// ============================================================================
 // WEBHOOK REGISTRATION / STATUS
 // ============================================================================
+//
+// These are normal JSON/API routes.
+// The actual Shopify webhook receiver is mounted separately
+// in server.js because it requires express.raw().
+//
 
 router.use(
   webhookRegistrationRoutes
