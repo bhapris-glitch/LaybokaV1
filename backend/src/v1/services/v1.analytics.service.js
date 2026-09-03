@@ -1,26 +1,24 @@
-'use strict';
-
 /**
  * ============================================================================
- * Layboka AI — V1 Analytics Service
+ * Layboka AI — V1
+ * Analytics Service
  * ============================================================================
  *
  * File:
  * backend/src/v1/services/v1.analytics.service.js
  *
  * Purpose:
- * - Aggregate V1 funnel events
+ * - Aggregate merchant funnel analytics
  * - Calculate conversion metrics
- * - Calculate product performance
- * - Calculate session-level funnel metrics
- * - Keep analytics logic separate from controllers
+ * - Calculate verified sales
+ * - Track product performance
+ * - Generate daily performance data
+ * - Power the V1 merchant dashboard
  *
- * IMPORTANT:
- * - Browser purchase events are NOT treated as verified revenue.
- * - Verified purchases must come from Shopify webhook processing.
- * - This service only reads analytics data.
  * ============================================================================
  */
+
+'use strict';
 
 const V1AnalyticsEvent = require('../models/V1AnalyticsEvent');
 
@@ -36,8 +34,11 @@ const FUNNEL_EVENTS = Object.freeze([
   'product_click',
   'add_to_cart',
   'checkout',
-  'purchase'
+  'purchase',
 ]);
+
+const DEFAULT_DAYS = 30;
+const MAX_DAYS = 365;
 
 
 // ============================================================================
@@ -46,62 +47,87 @@ const FUNNEL_EVENTS = Object.freeze([
 
 function normalizeShop(shop) {
   if (!shop || typeof shop !== 'string') {
-    throw new Error('Shop domain is required.');
+    throw new Error('Shop domain is required');
   }
 
   return shop
     .trim()
     .toLowerCase()
     .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .split('/')[0]
-    .split('?')[0]
-    .split('#')[0];
+    .replace(/\/+$/, '');
+}
+
+
+function parseDate(value, fallback) {
+  if (!value) {
+    return fallback;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return fallback;
+  }
+
+  return date;
 }
 
 
 function getDateRange(options = {}) {
   const now = new Date();
 
-  const endDate = options.endDate
-    ? new Date(options.endDate)
-    : now;
+  let endDate = parseDate(
+    options.endDate,
+    now
+  );
 
-  const startDate = options.startDate
-    ? new Date(options.startDate)
-    : new Date(
-        endDate.getTime() - (30 * 24 * 60 * 60 * 1000)
-      );
+  let startDate;
 
-  if (
-    Number.isNaN(startDate.getTime()) ||
-    Number.isNaN(endDate.getTime())
-  ) {
-    throw new Error('Invalid analytics date range.');
+  if (options.startDate) {
+    startDate = parseDate(
+      options.startDate,
+      new Date(now.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000)
+    );
+  } else {
+    const days = Math.min(
+      Math.max(
+        Number(options.days) || DEFAULT_DAYS,
+        1
+      ),
+      MAX_DAYS
+    );
+
+    startDate = new Date(
+      endDate.getTime() -
+      days * 24 * 60 * 60 * 1000
+    );
   }
 
   if (startDate > endDate) {
-    throw new Error('Analytics start date cannot be after end date.');
+    const temp = startDate;
+    startDate = endDate;
+    endDate = temp;
   }
 
   return {
     startDate,
-    endDate
+    endDate,
   };
 }
 
 
-function buildDateFilter(startDate, endDate) {
+function buildDateMatch(shop, startDate, endDate) {
   return {
+    shop,
     createdAt: {
       $gte: startDate,
-      $lte: endDate
-    }
+      $lte: endDate,
+    },
   };
 }
 
 
-function calculateRate(numerator, denominator) {
+function safePercentage(numerator, denominator) {
   if (!denominator || denominator <= 0) {
     return 0;
   }
@@ -112,69 +138,46 @@ function calculateRate(numerator, denominator) {
 }
 
 
-function calculateRevenue(events) {
-  return events.reduce((total, event) => {
-    const revenue = Number(event.revenue);
-
-    if (!Number.isFinite(revenue) || revenue < 0) {
-      return total;
-    }
-
-    return total + revenue;
-  }, 0);
-}
-
-
-function roundMoney(value) {
-  return Number(
-    Number(value || 0).toFixed(2)
-  );
-}
-
-
 // ============================================================================
-// GET RAW FUNNEL COUNTS
+// FUNNEL
 // ============================================================================
 
 /**
- * Returns event counts for the selected period.
- *
- * Example:
- *
- * {
- *   widget_open: 1000,
- *   conversation: 700,
- *   product_view: 450,
- *   product_click: 300,
- *   add_to_cart: 120,
- *   checkout: 80,
- *   purchase: 45
- * }
+ * Get raw event counts for the funnel.
  */
-async function getFunnelCounts(shop, options = {}) {
-  const normalizedShop = normalizeShop(shop);
-  const { startDate, endDate } = getDateRange(options);
+async function getFunnel(shopOrDomain, options = {}) {
+  const shop = normalizeShop(shopOrDomain);
 
-  const filter = {
-    shop: normalizedShop,
-    event: {
-      $in: FUNNEL_EVENTS
-    },
-    ...buildDateFilter(startDate, endDate)
-  };
+  const {
+    startDate,
+    endDate,
+  } = getDateRange(options);
 
-  const results = await V1AnalyticsEvent.aggregate([
+  const rows = await V1AnalyticsEvent.aggregate([
     {
-      $match: filter
+      $match: buildDateMatch(
+        shop,
+        startDate,
+        endDate
+      ),
     },
+
+    {
+      $match: {
+        event: {
+          $in: FUNNEL_EVENTS,
+        },
+      },
+    },
+
     {
       $group: {
         _id: '$event',
         count: {
-          $sum: 1
-        }
-      }
-    }
+          $sum: 1,
+        },
+      },
+    },
   ]);
 
   const counts = {};
@@ -183,15 +186,15 @@ async function getFunnelCounts(shop, options = {}) {
     counts[event] = 0;
   }
 
-  for (const result of results) {
-    counts[result._id] = result.count;
+  for (const row of rows) {
+    counts[row._id] = row.count;
   }
 
   return {
-    shop: normalizedShop,
+    shop,
     startDate,
     endDate,
-    counts
+    counts,
   };
 }
 
@@ -201,186 +204,203 @@ async function getFunnelCounts(shop, options = {}) {
 // ============================================================================
 
 /**
- * Counts unique sessions that reached each funnel stage.
+ * Calculate funnel using unique visitor sessions.
  *
- * This is more useful than raw event counts because one customer
- * may trigger the same event multiple times.
+ * This is more useful than raw event counts because one visitor
+ * may generate multiple events.
  */
-async function getUniqueSessionFunnel(shop, options = {}) {
-  const normalizedShop = normalizeShop(shop);
-  const { startDate, endDate } = getDateRange(options);
+async function getUniqueSessionFunnel(
+  shopOrDomain,
+  options = {}
+) {
+  const shop = normalizeShop(shopOrDomain);
 
-  const results = await V1AnalyticsEvent.aggregate([
+  const {
+    startDate,
+    endDate,
+  } = getDateRange(options);
+
+  const rows = await V1AnalyticsEvent.aggregate([
     {
-      $match: {
-        shop: normalizedShop,
-        event: {
-          $in: FUNNEL_EVENTS
+      $match: buildDateMatch(
+        shop,
+        startDate,
+        endDate
+      ),
+    },
+
+    {
+      $group: {
+        _id: '$sessionId',
+
+        events: {
+          $addToSet: '$event',
         },
-        ...buildDateFilter(startDate, endDate)
-      }
+      },
     },
-    {
-      $group: {
-        _id: {
-          event: '$event',
-          sessionId: '$sessionId'
-        }
-      }
-    },
-    {
-      $group: {
-        _id: '$_id.event',
-        sessions: {
-          $sum: 1
-        }
-      }
-    }
   ]);
 
-  const funnel = {};
+  const counts = {};
 
   for (const event of FUNNEL_EVENTS) {
-    funnel[event] = 0;
+    counts[event] = 0;
   }
 
-  for (const result of results) {
-    funnel[result._id] = result.sessions;
+  for (const row of rows) {
+    for (const event of FUNNEL_EVENTS) {
+      if (row.events.includes(event)) {
+        counts[event] += 1;
+      }
+    }
   }
 
   return {
-    shop: normalizedShop,
+    shop,
     startDate,
     endDate,
-    funnel
+    counts,
   };
 }
 
 
 // ============================================================================
-// VERIFIED SALES
+// SALES
 // ============================================================================
 
 /**
- * Returns VERIFIED Shopify purchase revenue only.
+ * Get verified Shopify sales only.
  *
- * Browser-generated purchase events are deliberately excluded.
+ * Browser-side purchase events are intentionally excluded.
  */
-async function getVerifiedSales(shop, options = {}) {
-  const normalizedShop = normalizeShop(shop);
-  const { startDate, endDate } = getDateRange(options);
+async function getVerifiedSales(
+  shopOrDomain,
+  options = {}
+) {
+  const shop = normalizeShop(shopOrDomain);
 
-  const purchases = await V1AnalyticsEvent
-    .find({
-      shop: normalizedShop,
-      event: 'purchase',
-      verified: true,
-      attributionSource: 'shopify_webhook',
-      ...buildDateFilter(startDate, endDate)
-    })
-    .select({
-      orderId: 1,
-      orderNumber: 1,
-      revenue: 1,
-      currency: 1,
-      sessionId: 1,
-      createdAt: 1
-    })
-    .sort({
-      createdAt: -1
-    })
-    .lean();
-
-  const revenue = calculateRevenue(purchases);
-
-  return {
-    shop: normalizedShop,
+  const {
     startDate,
     endDate,
-    purchaseCount: purchases.length,
-    revenue: roundMoney(revenue),
-    currency: purchases[0]?.currency || 'USD',
-    purchases
+  } = getDateRange(options);
+
+  const match = {
+    ...buildDateMatch(
+      shop,
+      startDate,
+      endDate
+    ),
+
+    event: 'purchase',
+    verified: true,
+    attributionSource: 'shopify_webhook',
   };
-}
 
+  const result = await V1AnalyticsEvent.aggregate([
+    {
+      $match: match,
+    },
 
-// ============================================================================
-// COMPLETE SALES FUNNEL
-// ============================================================================
+    {
+      $group: {
+        _id: null,
 
-/**
- * Main dashboard funnel.
- */
-async function getSalesFunnel(shop, options = {}) {
-  const normalizedShop = normalizeShop(shop);
+        orders: {
+          $sum: 1,
+        },
 
-  const [
-    eventFunnel,
-    sessionFunnel,
-    verifiedSales
-  ] = await Promise.all([
-    getFunnelCounts(normalizedShop, options),
-    getUniqueSessionFunnel(normalizedShop, options),
-    getVerifiedSales(normalizedShop, options)
+        revenue: {
+          $sum: {
+            $ifNull: ['$revenue', 0],
+          },
+        },
+      },
+    },
   ]);
 
-  const sessions = sessionFunnel.funnel;
+  const row = result[0] || {
+    orders: 0,
+    revenue: 0,
+  };
 
   return {
-    shop: normalizedShop,
+    shop,
+    startDate,
+    endDate,
+    orders: row.orders,
+    revenue: Number(
+      Number(row.revenue || 0).toFixed(2)
+    ),
+  };
+}
 
-    period: {
-      startDate: eventFunnel.startDate,
-      endDate: eventFunnel.endDate
+
+// ============================================================================
+// SALES FUNNEL
+// ============================================================================
+
+async function getSalesFunnel(
+  shopOrDomain,
+  options = {}
+) {
+  const funnel = await getUniqueSessionFunnel(
+    shopOrDomain,
+    options
+  );
+
+  const sales = await getVerifiedSales(
+    shopOrDomain,
+    options
+  );
+
+  const widgetOpens = funnel.counts.widget_open;
+  const conversations = funnel.counts.conversation;
+  const productViews = funnel.counts.product_view;
+  const productClicks = funnel.counts.product_click;
+  const addToCarts = funnel.counts.add_to_cart;
+  const checkouts = funnel.counts.checkout;
+
+  return {
+    ...funnel,
+
+    verifiedOrders: sales.orders,
+    verifiedRevenue: sales.revenue,
+
+    conversionRates: {
+      conversationFromWidget: safePercentage(
+        conversations,
+        widgetOpens
+      ),
+
+      productViewFromConversation: safePercentage(
+        productViews,
+        conversations
+      ),
+
+      productClickFromView: safePercentage(
+        productClicks,
+        productViews
+      ),
+
+      addToCartFromClick: safePercentage(
+        addToCarts,
+        productClicks
+      ),
+
+      checkoutFromCart: safePercentage(
+        checkouts,
+        addToCarts
+      ),
+
+      orderFromCheckout: safePercentage(
+        sales.orders,
+        checkouts
+      ),
+
+      overallPurchaseRate: safePercentage(
+        sales.orders,
+        widgetOpens
+      ),
     },
-
-    events: eventFunnel.counts,
-
-    uniqueSessions: sessions,
-
-    conversion: {
-      conversationRate: calculateRate(
-        sessions.conversation,
-        sessions.widget_open
-      ),
-
-      productViewRate: calculateRate(
-        sessions.product_view,
-        sessions.conversation
-      ),
-
-      productClickRate: calculateRate(
-        sessions.product_click,
-        sessions.product_view
-      ),
-
-      addToCartRate: calculateRate(
-        sessions.add_to_cart,
-        sessions.product_click
-      ),
-
-      checkoutRate: calculateRate(
-        sessions.checkout,
-        sessions.add_to_cart
-      ),
-
-      purchaseRate: calculateRate(
-        sessions.purchase,
-        sessions.checkout
-      ),
-
-      overallConversionRate: calculateRate(
-        sessions.purchase,
-        sessions.widget_open
-      )
-    },
-
-    sales: {
-      verifiedOrders: verifiedSales.purchaseCount,
-      verifiedRevenue: verifiedSales.revenue,
-      currency: verifiedSales.currency
-    }
   };
 }
 
@@ -389,158 +409,119 @@ async function getSalesFunnel(shop, options = {}) {
 // PRODUCT PERFORMANCE
 // ============================================================================
 
-/**
- * Shows which products are receiving attention and generating actions.
- */
-async function getProductPerformance(shop, options = {}) {
-  const normalizedShop = normalizeShop(shop);
-  const { startDate, endDate } = getDateRange(options);
+async function getProductPerformance(
+  shopOrDomain,
+  options = {}
+) {
+  const shop = normalizeShop(shopOrDomain);
 
-  const results = await V1AnalyticsEvent.aggregate([
+  const {
+    startDate,
+    endDate,
+  } = getDateRange(options);
+
+  const rows = await V1AnalyticsEvent.aggregate([
     {
       $match: {
-        shop: normalizedShop,
-        ...buildDateFilter(startDate, endDate),
+        ...buildDateMatch(
+          shop,
+          startDate,
+          endDate
+        ),
+
+        shopifyProductId: {
+          $exists: true,
+          $ne: null,
+        },
+
         event: {
           $in: [
             'product_view',
             'product_click',
             'add_to_cart',
-            'checkout',
-            'purchase'
-          ]
+          ],
         },
-        $or: [
-          {
-            productId: {
-              $exists: true,
-              $ne: null
-            }
-          },
-          {
-            shopifyProductId: {
-              $exists: true,
-              $ne: null
-            }
-          }
-        ]
-      }
+      },
     },
+
     {
       $group: {
         _id: {
-          productId: '$productId',
-          shopifyProductId: '$shopifyProductId'
+          productId: '$shopifyProductId',
+          event: '$event',
         },
 
-        views: {
-          $sum: {
-            $cond: [
-              {
-                $eq: ['$event', 'product_view']
-              },
-              1,
-              0
-            ]
-          }
+        count: {
+          $sum: 1,
+        },
+      },
+    },
+
+    {
+      $group: {
+        _id: '$_id.productId',
+
+        events: {
+          $push: {
+            event: '$_id.event',
+            count: '$count',
+          },
         },
 
-        clicks: {
-          $sum: {
-            $cond: [
-              {
-                $eq: ['$event', 'product_click']
-              },
-              1,
-              0
-            ]
-          }
+        totalInteractions: {
+          $sum: '$count',
         },
-
-        addToCart: {
-          $sum: {
-            $cond: [
-              {
-                $eq: ['$event', 'add_to_cart']
-              },
-              1,
-              0
-            ]
-          }
-        },
-
-        checkout: {
-          $sum: {
-            $cond: [
-              {
-                $eq: ['$event', 'checkout']
-              },
-              1,
-              0
-            ]
-          }
-        },
-
-        purchases: {
-          $sum: {
-            $cond: [
-              {
-                $and: [
-                  {
-                    $eq: ['$event', 'purchase']
-                  },
-                  {
-                    $eq: ['$verified', true]
-                  }
-                ]
-              },
-              1,
-              0
-            ]
-          }
-        }
-      }
+      },
     },
 
     {
       $sort: {
-        purchases: -1,
-        addToCart: -1,
-        clicks: -1,
-        views: -1
-      }
+        totalInteractions: -1,
+      },
     },
 
     {
-      $limit: 100
-    }
+      $limit: 100,
+    },
   ]);
 
-  return results.map((item) => ({
-    productId: item._id.productId || null,
-    shopifyProductId: item._id.shopifyProductId || null,
+  return rows.map((row) => {
+    const metrics = {
+      productViews: 0,
+      productClicks: 0,
+      addToCarts: 0,
+    };
 
-    views: item.views,
-    clicks: item.clicks,
-    addToCart: item.addToCart,
-    checkout: item.checkout,
-    verifiedPurchases: item.purchases,
+    for (const item of row.events) {
+      if (item.event === 'product_view') {
+        metrics.productViews = item.count;
+      }
 
-    clickRate: calculateRate(
-      item.clicks,
-      item.views
-    ),
+      if (item.event === 'product_click') {
+        metrics.productClicks = item.count;
+      }
 
-    addToCartRate: calculateRate(
-      item.addToCart,
-      item.clicks
-    ),
+      if (item.event === 'add_to_cart') {
+        metrics.addToCarts = item.count;
+      }
+    }
 
-    purchaseRate: calculateRate(
-      item.purchases,
-      item.views
-    )
-  }));
+    return {
+      shopifyProductId: row._id,
+      ...metrics,
+      totalInteractions: row.totalInteractions,
+
+      clickRate: safePercentage(
+        metrics.productClicks,
+        metrics.productViews
+      ),
+
+      addToCartRate: safePercentage(
+        metrics.addToCarts,
+        metrics.productClicks
+      ),
+    };
+  });
 }
 
 
@@ -548,73 +529,166 @@ async function getProductPerformance(shop, options = {}) {
 // DAILY PERFORMANCE
 // ============================================================================
 
-/**
- * Returns daily funnel activity.
- *
- * Useful for a small dashboard chart.
- */
-async function getDailyPerformance(shop, options = {}) {
-  const normalizedShop = normalizeShop(shop);
-  const { startDate, endDate } = getDateRange(options);
+async function getDailyPerformance(
+  shopOrDomain,
+  options = {}
+) {
+  const shop = normalizeShop(shopOrDomain);
 
-  const results = await V1AnalyticsEvent.aggregate([
+  const {
+    startDate,
+    endDate,
+  } = getDateRange(options);
+
+  const rows = await V1AnalyticsEvent.aggregate([
     {
-      $match: {
-        shop: normalizedShop,
-        ...buildDateFilter(startDate, endDate),
-        event: {
-          $in: FUNNEL_EVENTS
-        }
-      }
+      $match: buildDateMatch(
+        shop,
+        startDate,
+        endDate
+      ),
     },
 
     {
       $group: {
         _id: {
-          date: {
-            $dateToString: {
-              format: '%Y-%m-%d',
-              date: '$createdAt'
-            }
+          $dateToString: {
+            format: '%Y-%m-%d',
+            date: '$createdAt',
           },
-          event: '$event'
         },
 
-        count: {
-          $sum: 1
-        }
-      }
+        widgetOpens: {
+          $sum: {
+            $cond: [
+              { $eq: ['$event', 'widget_open'] },
+              1,
+              0,
+            ],
+          },
+        },
+
+        conversations: {
+          $sum: {
+            $cond: [
+              { $eq: ['$event', 'conversation'] },
+              1,
+              0,
+            ],
+          },
+        },
+
+        productViews: {
+          $sum: {
+            $cond: [
+              { $eq: ['$event', 'product_view'] },
+              1,
+              0,
+            ],
+          },
+        },
+
+        productClicks: {
+          $sum: {
+            $cond: [
+              { $eq: ['$event', 'product_click'] },
+              1,
+              0,
+            ],
+          },
+        },
+
+        addToCarts: {
+          $sum: {
+            $cond: [
+              { $eq: ['$event', 'add_to_cart'] },
+              1,
+              0,
+            ],
+          },
+        },
+
+        checkouts: {
+          $sum: {
+            $cond: [
+              { $eq: ['$event', 'checkout'] },
+              1,
+              0,
+            ],
+          },
+        },
+
+        verifiedOrders: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ['$event', 'purchase'] },
+                  { $eq: ['$verified', true] },
+                  {
+                    $eq: [
+                      '$attributionSource',
+                      'shopify_webhook',
+                    ],
+                  },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+
+        verifiedRevenue: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ['$event', 'purchase'] },
+                  { $eq: ['$verified', true] },
+                  {
+                    $eq: [
+                      '$attributionSource',
+                      'shopify_webhook',
+                    ],
+                  },
+                ],
+              },
+              {
+                $ifNull: ['$revenue', 0],
+              },
+              0,
+            ],
+          },
+        },
+      },
     },
 
     {
       $sort: {
-        '_id.date': 1
-      }
-    }
+        _id: 1,
+      },
+    },
   ]);
 
-  const days = {};
+  return rows.map((row) => ({
+    date: row._id,
 
-  for (const result of results) {
-    const date = result._id.date;
+    widgetOpens: row.widgetOpens,
+    conversations: row.conversations,
 
-    if (!days[date]) {
-      days[date] = {};
+    productViews: row.productViews,
+    productClicks: row.productClicks,
 
-      for (const event of FUNNEL_EVENTS) {
-        days[date][event] = 0;
-      }
-    }
+    addToCarts: row.addToCarts,
+    checkouts: row.checkouts,
 
-    days[date][result._id.event] = result.count;
-  }
+    verifiedOrders: row.verifiedOrders,
 
-  return Object.entries(days).map(
-    ([date, metrics]) => ({
-      date,
-      ...metrics
-    })
-  );
+    verifiedRevenue: Number(
+      Number(row.verifiedRevenue || 0).toFixed(2)
+    ),
+  }));
 }
 
 
@@ -622,43 +696,44 @@ async function getDailyPerformance(shop, options = {}) {
 // DASHBOARD SUMMARY
 // ============================================================================
 
-/**
- * Small summary designed for the merchant dashboard.
- */
-async function getDashboardSummary(shop, options = {}) {
-  const funnel = await getSalesFunnel(
-    shop,
-    options
-  );
+async function getDashboardSummary(
+  shopOrDomain,
+  options = {}
+) {
+  const shop = normalizeShop(shopOrDomain);
+
+  const [
+    salesFunnel,
+    sales,
+    products,
+  ] = await Promise.all([
+    getSalesFunnel(shop, options),
+    getVerifiedSales(shop, options),
+    getProductPerformance(shop, options),
+  ]);
 
   return {
-    period: funnel.period,
+    shop,
 
-    visitors: funnel.uniqueSessions.widget_open,
+    dateRange: {
+      startDate: salesFunnel.startDate,
+      endDate: salesFunnel.endDate,
+    },
 
-    conversations:
-      funnel.uniqueSessions.conversation,
+    funnel: salesFunnel.counts,
 
-    productsViewed:
-      funnel.uniqueSessions.product_view,
+    conversionRates:
+      salesFunnel.conversionRates,
 
-    addToCarts:
-      funnel.uniqueSessions.add_to_cart,
+    sales: {
+      orders: sales.orders,
+      revenue: sales.revenue,
+    },
 
-    checkouts:
-      funnel.uniqueSessions.checkout,
-
-    orders:
-      funnel.sales.verifiedOrders,
-
-    revenue:
-      funnel.sales.verifiedRevenue,
-
-    currency:
-      funnel.sales.currency,
-
-    conversionRate:
-      funnel.conversion.overallConversionRate
+    products: {
+      trackedProducts: products.length,
+      topProducts: products.slice(0, 10),
+    },
   };
 }
 
@@ -672,17 +747,11 @@ module.exports = {
 
   getDateRange,
 
-  getFunnelCounts,
-
+  getFunnel,
   getUniqueSessionFunnel,
-
   getVerifiedSales,
-
   getSalesFunnel,
-
   getProductPerformance,
-
   getDailyPerformance,
-
-  getDashboardSummary
+  getDashboardSummary,
 };
