@@ -8,13 +8,13 @@
  * backend/src/v1/controllers/v1.install.controller.js
  *
  * Purpose:
- * - Start Shopify OAuth
+ * - Start Shopify OAuth installation
  * - Validate OAuth callback
- * - Exchange authorization code for token
- * - Save expiring offline access/refresh tokens
- * - Start the 5-day trial
- * - Register V1 webhooks
- * - Start initial product synchronization
+ * - Exchange OAuth code
+ * - Create/update V1 merchant
+ * - Start trial
+ * - Register webhooks
+ * - Start product synchronization
  *
  * ============================================================================
  */
@@ -23,43 +23,30 @@
 
 const crypto = require('crypto');
 
-const V1Shop = require('../models/V1Shop');
+const {
+  createOAuthState,
+  buildAuthorizationUrl,
+  validateState,
+  verifyOAuthHmac,
+  completeOAuth,
+  normalizeShop,
+} = require('../services/oauth.service');
 
 const {
-  startTrial,
-} = require('../services/v1.trial.service');
-
-const {
-  syncProducts,
-} = require('../services/v1.product.service');
-
-const {
-  registerAllWebhooks,
-} = require('../services/v1.webhook.service');
+  installShop,
+} = require('../services/install.service');
 
 
 // ============================================================================
 // CONFIG
 // ============================================================================
 
-const SHOPIFY_API_VERSION =
-  process.env.SHOPIFY_API_VERSION || '2026-07';
-
-const SHOPIFY_CLIENT_ID =
-  process.env.SHOPIFY_API_KEY ||
-  process.env.SHOPIFY_CLIENT_ID;
-
-const SHOPIFY_CLIENT_SECRET =
-  process.env.SHOPIFY_API_SECRET ||
-  process.env.SHOPIFY_CLIENT_SECRET;
-
-const SHOPIFY_SCOPES =
-  process.env.SHOPIFY_SCOPES ||
-  'read_products,read_orders';
-
 const APP_URL =
-  process.env.APP_URL ||
-  process.env.BACKEND_URL;
+  (
+    process.env.APP_URL ||
+    process.env.BACKEND_URL ||
+    ''
+  ).replace(/\/+$/, '');
 
 const SUCCESS_URL =
   process.env.V1_SUCCESS_URL ||
@@ -73,136 +60,71 @@ const OAUTH_STATE_MAX_AGE =
 
 
 // ============================================================================
-// SHOP NORMALIZATION
+// HELPERS
 // ============================================================================
 
-function normalizeShop(shop) {
-  if (!shop) return null;
+function isValidShop(shop) {
 
-  return String(shop)
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .split('/')[0]
-    .split('?')[0]
-    .split('#')[0];
-}
+  try {
 
+    normalizeShop(shop);
 
-// ============================================================================
-// SHOP DOMAIN VALIDATION
-// ============================================================================
+    return true;
 
-function isValidShopDomain(shop) {
-  if (!shop) return false;
+  } catch {
 
-  /*
-   * V1 only accepts Shopify-managed stores.
-   *
-   * Custom domains are not used as the OAuth shop parameter.
-   */
-  return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i
-    .test(shop);
-}
-
-
-// ============================================================================
-// RANDOM OAUTH STATE
-// ============================================================================
-
-function generateState() {
-  return crypto.randomBytes(32).toString('hex');
-}
-
-
-// ============================================================================
-// HMAC VALIDATION
-// ============================================================================
-
-function verifyShopifyHmac(query) {
-  if (!query?.hmac) {
     return false;
   }
+}
 
-  const receivedHmac =
-    String(query.hmac);
 
-  const message =
-    Object.keys(query)
-      .filter(
-        key =>
-          key !== 'hmac' &&
-          key !== 'signature'
-      )
-      .sort()
-      .map(
-        key =>
-          `${key}=${Array.isArray(query[key])
-            ? query[key].join(',')
-            : query[key]}`
-      )
-      .join('&');
+function setOAuthStateCookie(
+  res,
+  state
+) {
 
-  const digest =
-    crypto
-      .createHmac(
-        'sha256',
-        SHOPIFY_CLIENT_SECRET
-      )
-      .update(message)
-      .digest('hex');
+  res.cookie(
+    OAUTH_STATE_COOKIE,
+    state,
+    {
+      httpOnly: true,
 
-  if (
-    receivedHmac.length !==
-    digest.length
-  ) {
-    return false;
-  }
+      secure:
+        process.env.NODE_ENV ===
+        'production',
 
-  return crypto.timingSafeEqual(
-    Buffer.from(receivedHmac, 'utf8'),
-    Buffer.from(digest, 'utf8')
+      sameSite:
+        'lax',
+
+      maxAge:
+        OAUTH_STATE_MAX_AGE,
+
+      path:
+        '/',
+    }
   );
 }
 
 
-// ============================================================================
-// OAUTH STATE VALIDATION
-// ============================================================================
-
-function verifyOAuthState(
-  req,
-  state
+function clearOAuthStateCookie(
+  res
 ) {
-  const storedState =
-    req.cookies?.[
-      OAUTH_STATE_COOKIE
-    ];
 
-  if (
-    !storedState ||
-    !state
-  ) {
-    return false;
-  }
+  res.clearCookie(
+    OAUTH_STATE_COOKIE,
+    {
+      httpOnly: true,
 
-  if (
-    storedState.length !==
-    state.length
-  ) {
-    return false;
-  }
+      secure:
+        process.env.NODE_ENV ===
+        'production',
 
-  return crypto.timingSafeEqual(
-    Buffer.from(
-      storedState,
-      'utf8'
-    ),
-    Buffer.from(
-      state,
-      'utf8'
-    )
+      sameSite:
+        'lax',
+
+      path:
+        '/',
+    }
   );
 }
 
@@ -215,534 +137,285 @@ async function startInstallation(
   req,
   res
 ) {
+
   try {
-    if (
-      !SHOPIFY_CLIENT_ID ||
-      !SHOPIFY_CLIENT_SECRET
-    ) {
-      return res.status(500).json({
-        success: false,
-        error:
-          'Shopify OAuth is not configured',
-      });
-    }
 
     const shop =
       normalizeShop(
         req.query.shop
       );
 
-    if (
-      !isValidShopDomain(shop)
-    ) {
+
+    if (!isValidShop(shop)) {
+
       return res.status(400).json({
         success: false,
         error:
-          'Enter a valid Shopify myshopify.com store domain',
+          'A valid Shopify shop domain is required.',
       });
     }
 
-    const state =
-      generateState();
-
-    /*
-     * Secure, short-lived OAuth state cookie.
-     */
-    res.cookie(
-      OAUTH_STATE_COOKIE,
-      state,
-      {
-        httpOnly: true,
-        secure:
-          process.env.NODE_ENV ===
-          'production',
-        sameSite: 'lax',
-        maxAge:
-          OAUTH_STATE_MAX_AGE,
-      }
-    );
 
     const redirectUri =
       `${APP_URL}/v1/install/callback`;
 
-    const params =
-      new URLSearchParams({
-        client_id:
-          SHOPIFY_CLIENT_ID,
 
-        scope:
-          SHOPIFY_SCOPES,
+    if (!APP_URL) {
 
-        redirect_uri:
-          redirectUri,
-
-        state,
+      return res.status(500).json({
+        success: false,
+        error:
+          'APP_URL or BACKEND_URL is not configured.',
       });
+    }
+
+
+    const state =
+      createOAuthState();
+
+
+    setOAuthStateCookie(
+      res,
+      state
+    );
+
 
     const authorizationUrl =
-      `https://${shop}/admin/oauth/authorize?${params.toString()}`;
+      buildAuthorizationUrl({
+        shop,
+        state,
+        redirectUri,
+      });
+
 
     return res.redirect(
       authorizationUrl
     );
+
   } catch (error) {
+
     console.error(
-      'V1 Shopify installation error:',
+      '[V1 Install] Start error:',
       error.message
     );
 
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
       error:
-        'Unable to start Shopify installation',
+        error.message,
     });
   }
 }
 
 
 // ============================================================================
-// SHOPIFY TOKEN EXCHANGE
-// ============================================================================
-
-async function exchangeCodeForToken(
-  shop,
-  code
-) {
-  const response =
-    await fetch(
-      `https://${shop}/admin/oauth/access_token`,
-      {
-        method: 'POST',
-
-        headers: {
-          'Content-Type':
-            'application/json',
-        },
-
-        body: JSON.stringify({
-          client_id:
-            SHOPIFY_CLIENT_ID,
-
-          client_secret:
-            SHOPIFY_CLIENT_SECRET,
-
-          code,
-
-          /*
-           * Request an expiring offline
-           * access token.
-           */
-          expiring: true,
-        }),
-      }
-    );
-
-  let data = {};
-
-  try {
-    data =
-      await response.json();
-  } catch {
-    data = {};
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      data.error_description ||
-      data.error ||
-      'Shopify token exchange failed'
-    );
-  }
-
-  if (!data.access_token) {
-    throw new Error(
-      'Shopify did not return an access token'
-    );
-  }
-
-  return data;
-}
-
-
-// ============================================================================
-// GET SHOP INFORMATION
-// ============================================================================
-
-async function getShopInfo(
-  shop,
-  accessToken
-) {
-  const response =
-    await fetch(
-      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/shop.json`,
-      {
-        method: 'GET',
-
-        headers: {
-          'X-Shopify-Access-Token':
-            accessToken,
-
-          Accept:
-            'application/json',
-        },
-      }
-    );
-
-  let data = {};
-
-  try {
-    data =
-      await response.json();
-  } catch {
-    data = {};
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      data.errors ||
-      'Unable to retrieve Shopify shop information'
-    );
-  }
-
-  return data.shop || {};
-}
-
-
-// ============================================================================
-// CREATE / UPDATE V1 SHOP
-// ============================================================================
-
-async function createOrUpdateShop(
-  shop,
-  tokenData,
-  shopInfo
-) {
-  const now =
-    new Date();
-
-  const expiresAt =
-    tokenData.expires_in
-      ? new Date(
-          now.getTime() +
-          Number(tokenData.expires_in) *
-            1000
-        )
-      : null;
-
-  const refreshTokenExpiresAt =
-    tokenData.refresh_token_expires_in
-      ? new Date(
-          now.getTime() +
-          Number(
-            tokenData.refresh_token_expires_in
-          ) *
-            1000
-        )
-      : null;
-
-  /*
-   * Find the shop first so we can distinguish
-   * a new installation from a returning merchant.
-   */
-  let existingShop =
-    await V1Shop.findOne({
-      shop,
-    }).select(
-      '+accessToken +refreshToken'
-    );
-
-  if (!existingShop) {
-    existingShop =
-      await V1Shop.findOne({
-        shopifyShopId:
-          shopInfo.id
-            ? String(shopInfo.id)
-            : undefined,
-      }).select(
-        '+accessToken +refreshToken'
-      );
-  }
-
-  const update = {
-    shop,
-
-    accessToken:
-      tokenData.access_token,
-
-    refreshToken:
-      tokenData.refresh_token ||
-      existingShop?.refreshToken,
-
-    accessTokenExpiresAt:
-      expiresAt,
-
-    refreshTokenExpiresAt:
-      refreshTokenExpiresAt ||
-      existingShop?.refreshTokenExpiresAt,
-
-    tokenType:
-      tokenData.expires_in
-        ? 'expiring_offline'
-        : 'legacy_offline',
-
-    tokenRefreshedAt:
-      now,
-
-    tokenRefreshError:
-      null,
-
-    shopifyShopId:
-      shopInfo.id
-        ? String(shopInfo.id)
-        : existingShop?.shopifyShopId,
-
-    shopName:
-      shopInfo.name ||
-      existingShop?.shopName ||
-      shop,
-
-    email:
-      shopInfo.email ||
-      shopInfo.customer_email ||
-      existingShop?.email ||
-      null,
-  };
-
-  /*
-   * Never reset trial dates here.
-   *
-   * This is critical: reinstalling/reconnecting
-   * must NOT give the merchant another 5-day trial.
-   */
-  if (!existingShop) {
-    update.trialStartedAt = now;
-  }
-
-  const savedShop =
-    await V1Shop.findOneAndUpdate(
-      { shop },
-
-      {
-        $set: update,
-
-        $setOnInsert: {
-          aiEnabled: true,
-          subscriptionStatus:
-            'trial',
-          productSyncStatus:
-            'pending',
-        },
-      },
-
-      {
-        new: true,
-        upsert: true,
-        setDefaultsOnInsert: true,
-      }
-    );
-
-  return {
-    shop: savedShop,
-    isNewInstallation:
-      !existingShop,
-  };
-}
-
-
-// ============================================================================
-// HANDLE OAUTH CALLBACK
+// OAUTH CALLBACK
 // ============================================================================
 
 async function handleCallback(
   req,
   res
 ) {
+
   try {
+
     const {
-      shop: rawShop,
+      shop,
       code,
       state,
     } = req.query;
 
-    const shop =
-      normalizeShop(rawShop);
+
+    // ------------------------------------------------------------------------
+    // REQUIRED PARAMETERS
+    // ------------------------------------------------------------------------
 
     if (
-      !isValidShopDomain(shop)
+      !shop ||
+      !code ||
+      !state
     ) {
+
       return res.status(400).json({
         success: false,
         error:
-          'Invalid Shopify shop',
+          'Invalid Shopify OAuth callback.',
       });
     }
 
-    if (!code) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Shopify authorization code is missing',
-      });
-    }
 
-    /*
-     * Validate OAuth state before doing
-     * anything with the authorization code.
-     */
+    // ------------------------------------------------------------------------
+    // SHOP VALIDATION
+    // ------------------------------------------------------------------------
+
     if (
-      !verifyOAuthState(
-        req,
-        state
+      !isValidShop(shop)
+    ) {
+
+      return res.status(400).json({
+        success: false,
+        error:
+          'Invalid Shopify shop domain.',
+      });
+    }
+
+
+    const normalizedShop =
+      normalizeShop(shop);
+
+
+    // ------------------------------------------------------------------------
+    // STATE VALIDATION
+    // ------------------------------------------------------------------------
+
+    const storedState =
+      req.cookies?.[
+        OAUTH_STATE_COOKIE
+      ];
+
+
+    if (
+      !validateState(
+        state,
+        storedState
       )
     ) {
+
       return res.status(403).json({
         success: false,
         error:
-          'Invalid OAuth state',
+          'Invalid or expired OAuth state.',
       });
     }
 
-    /*
-     * Validate Shopify HMAC.
-     */
+
+    // ------------------------------------------------------------------------
+    // HMAC VALIDATION
+    // ------------------------------------------------------------------------
+
     if (
-      !verifyShopifyHmac(
+      !verifyOAuthHmac(
         req.query
       )
     ) {
+
       return res.status(403).json({
         success: false,
         error:
-          'Invalid Shopify HMAC',
+          'Invalid Shopify OAuth signature.',
       });
     }
 
-    /*
-     * Clear one-time OAuth state.
-     */
-    res.clearCookie(
-      OAUTH_STATE_COOKIE
+
+    clearOAuthStateCookie(
+      res
     );
 
-    /*
-     * Exchange authorization code
-     * for expiring offline credentials.
-     */
-    const tokenData =
-      await exchangeCodeForToken(
-        shop,
-        code
-      );
 
-    /*
-     * Get basic merchant/store information.
-     */
-    const shopInfo =
-      await getShopInfo(
-        shop,
-        tokenData.access_token
-      );
+    // ------------------------------------------------------------------------
+    // TOKEN + SHOP INFORMATION
+    // ------------------------------------------------------------------------
 
-    /*
-     * Save merchant + credentials.
-     */
-    const {
-      shop: v1Shop,
-      isNewInstallation,
-    } =
-      await createOrUpdateShop(
-        shop,
-        tokenData,
-        shopInfo
-      );
+    const oauth =
+      await completeOAuth({
+        shop:
+          normalizedShop,
 
-    /*
-     * Start the trial only when appropriate.
-     * The trial service itself prevents resetting
-     * an existing trial.
-     */
-    await startTrial(
-      v1Shop
-    );
-
-    /*
-     * Register webhooks before background sync.
-     *
-     * Registration failures should not destroy
-     * a successful OAuth installation.
-     */
-    let webhookResult = null;
-
-    try {
-      webhookResult =
-        await registerAllWebhooks(
-          v1Shop
-        );
-    } catch (error) {
-      console.error(
-        `V1 webhook registration failed for ${shop}:`,
-        error.message
-      );
-    }
-
-    /*
-     * Product sync is intentionally started in
-     * the background so the merchant does not
-     * wait for a large catalog to finish syncing.
-     */
-    setImmediate(
-      async () => {
-        try {
-          await syncProducts(
-            v1Shop
-          );
-        } catch (error) {
-          console.error(
-            `V1 product sync failed for ${shop}:`,
-            error.message
-          );
-        }
-      }
-    );
-
-    /*
-     * Redirect merchant to the V1 success page.
-     */
-    const successParams =
-      new URLSearchParams({
-        shop,
-        installed: '1',
+        code,
       });
 
-    if (isNewInstallation) {
-      successParams.set(
-        'new',
-        '1'
-      );
-    }
+
+    // ------------------------------------------------------------------------
+    // CREATE / UPDATE V1 SHOP
+    // ------------------------------------------------------------------------
+
+    const result =
+      await installShop({
+        shop:
+          normalizedShop,
+
+        shopInfo:
+          oauth.shopInfo,
+
+        accessToken:
+          oauth.accessToken,
+
+        refreshToken:
+          oauth.refreshToken,
+
+        expiresIn:
+          oauth.expiresIn,
+
+        refreshTokenExpiresIn:
+          oauth.refreshTokenExpiresIn,
+
+        tokenType:
+          oauth.tokenType,
+      });
+
+
+    // ------------------------------------------------------------------------
+    // SUCCESS
+    // ------------------------------------------------------------------------
 
     if (
-      webhookResult?.success
+      SUCCESS_URL
     ) {
-      successParams.set(
-        'webhooks',
-        '1'
+
+      const url =
+        new URL(
+          SUCCESS_URL
+        );
+
+
+      url.searchParams.set(
+        'shop',
+        normalizedShop
+      );
+
+
+      url.searchParams.set(
+        'installed',
+        'true'
+      );
+
+
+      return res.redirect(
+        url.toString()
       );
     }
 
-    return res.redirect(
-      `${SUCCESS_URL}?${successParams.toString()}`
-    );
+
+    return res.status(200).json({
+      success: true,
+
+      message:
+        'Layboka AI installed successfully.',
+
+      shop:
+        normalizedShop,
+
+      webhooks:
+        result.webhookResult,
+    });
+
   } catch (error) {
+
     console.error(
-      'V1 Shopify OAuth callback error:',
+      '[V1 Install] Callback error:',
       error.message
     );
+
+
+    clearOAuthStateCookie(
+      res
+    );
+
 
     return res.status(500).json({
       success: false,
       error:
-        'Shopify installation failed',
+        'Shopify installation failed.',
     });
   }
 }
@@ -755,12 +428,4 @@ async function handleCallback(
 module.exports = {
   startInstallation,
   handleCallback,
-
-  normalizeShop,
-  isValidShopDomain,
-  verifyShopifyHmac,
-
-  exchangeCodeForToken,
-  getShopInfo,
-  createOrUpdateShop,
 };
