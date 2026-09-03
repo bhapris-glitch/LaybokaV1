@@ -12,44 +12,91 @@
  * - Connect MongoDB
  * - Configure security
  * - Configure CORS
- * - Mount V1 routes
  * - Preserve raw Shopify webhook body
- * - Provide health endpoint
+ * - Mount V1 API
+ * - Provide health endpoints
+ * - Gracefully shut down
  *
  * ============================================================================
  */
 
 'use strict';
 
+
+// ============================================================================
+// ENVIRONMENT
+// ============================================================================
+
 require('dotenv').config();
 
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const cookieParser = require('cookie-parser');
 
-const mongoose = require('mongoose');
+// ============================================================================
+// DEPENDENCIES
+// ============================================================================
+
+const express =
+  require('express');
+
+const cors =
+  require('cors');
+
+const helmet =
+  require('helmet');
+
+const cookieParser =
+  require('cookie-parser');
+
+const mongoose =
+  require('mongoose');
 
 
 // ============================================================================
-// V1 ROUTES
+// ROUTES
 // ============================================================================
+//
+// IMPORTANT:
+//
+// Webhook routes and normal V1 routes are intentionally loaded separately.
+//
+// Shopify webhook:
+//
+//   v1.webhook.routes.js
+//
+// Normal V1 API:
+//
+//   v1.index.js
+//
+// This is necessary because Shopify webhook verification requires
+// the original raw request body.
+//
 
 const v1Routes =
   require('./src/v1/routes/v1.index');
 
+const v1WebhookRoutes =
+  require('./src/v1/routes/v1.webhook.routes');
+
 
 // ============================================================================
-// CONFIG
+// APP
 // ============================================================================
 
-const app = express();
+const app =
+  express();
+
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
 
 const PORT =
-  Number(process.env.PORT) || 5000;
+  Number(
+    process.env.PORT
+  ) || 5000;
 
 const NODE_ENV =
-  process.env.NODE_ENV || 'development';
+  process.env.NODE_ENV ||
+  'development';
 
 const MONGODB_URI =
   process.env.MONGODB_URI ||
@@ -61,10 +108,11 @@ const FRONTEND_URL =
 
 
 // ============================================================================
-// VALIDATION
+// STARTUP VALIDATION
 // ============================================================================
 
 if (!MONGODB_URI) {
+
   console.error(
     '[Server] MONGODB_URI is not configured'
   );
@@ -76,15 +124,25 @@ if (!MONGODB_URI) {
 // ============================================================================
 // TRUST PROXY
 // ============================================================================
+//
+// Required when running behind Railway, Render, Vercel proxy,
+// Cloudflare, or another reverse proxy.
+//
 
-app.set('trust proxy', 1);
+app.set(
+  'trust proxy',
+  1
+);
 
 
 // ============================================================================
-// SECURITY
+// BASIC SECURITY
 // ============================================================================
 
-app.disable('x-powered-by');
+app.disable(
+  'x-powered-by'
+);
+
 
 app.use(
   helmet({
@@ -99,57 +157,107 @@ app.use(
 // CORS
 // ============================================================================
 
-const allowedOrigins = FRONTEND_URL
-  ? FRONTEND_URL
-      .split(',')
-      .map((origin) => origin.trim())
-      .filter(Boolean)
-  : [];
+const allowedOrigins =
+  FRONTEND_URL
+    .split(',')
+    .map(
+      (origin) =>
+        origin.trim()
+    )
+    .filter(Boolean);
 
 
 app.use(
   cors({
-    origin(origin, callback) {
 
-      // Allow server-to-server requests.
+    origin(
+      origin,
+      callback
+    ) {
+
+      // ----------------------------------------------------------------------
+      // SERVER-TO-SERVER REQUEST
+      // ----------------------------------------------------------------------
+
       if (!origin) {
-        return callback(null, true);
+        return callback(
+          null,
+          true
+        );
       }
 
-      // Development convenience.
+
+      // ----------------------------------------------------------------------
+      // DEVELOPMENT
+      // ----------------------------------------------------------------------
+
       if (
         NODE_ENV !== 'production' &&
         (
-          origin.startsWith('http://localhost:') ||
-          origin.startsWith('http://127.0.0.1:')
+          origin.startsWith(
+            'http://localhost:'
+          ) ||
+          origin.startsWith(
+            'http://127.0.0.1:'
+          )
         )
       ) {
-        return callback(null, true);
+
+        return callback(
+          null,
+          true
+        );
       }
 
-      // If no explicit origins are configured,
-      // reject browser cross-origin requests in production.
+
+      // ----------------------------------------------------------------------
+      // PRODUCTION WITHOUT CONFIGURED ORIGINS
+      // ----------------------------------------------------------------------
+
       if (
         NODE_ENV === 'production' &&
         allowedOrigins.length === 0
       ) {
+
         return callback(
-          new Error('CORS origin not configured')
+          new Error(
+            'CORS origin not configured'
+          )
         );
       }
 
+
+      // ----------------------------------------------------------------------
+      // ALLOWED ORIGIN
+      // ----------------------------------------------------------------------
+
       if (
-        allowedOrigins.includes(origin)
+        allowedOrigins.includes(
+          origin
+        )
       ) {
-        return callback(null, true);
+
+        return callback(
+          null,
+          true
+        );
       }
 
+
+      // ----------------------------------------------------------------------
+      // BLOCK
+      // ----------------------------------------------------------------------
+
       return callback(
-        new Error('Not allowed by CORS')
+        new Error(
+          'Not allowed by CORS'
+        )
       );
     },
 
+
     credentials: true,
+
 
     methods: [
       'GET',
@@ -159,6 +267,7 @@ app.use(
       'DELETE',
       'OPTIONS',
     ],
+
 
     allowedHeaders: [
       'Content-Type',
@@ -174,40 +283,53 @@ app.use(
 // COOKIE PARSER
 // ============================================================================
 
-app.use(cookieParser());
+app.use(
+  cookieParser()
+);
 
 
 // ============================================================================
 // SHOPIFY WEBHOOK ROUTES
 // ============================================================================
 //
-// IMPORTANT:
+// VERY IMPORTANT:
 //
-// The V1 webhook route internally uses express.raw().
-// Therefore it MUST be mounted before express.json().
+// DO NOT MOVE THIS BELOW express.json().
 //
-// The V1 index contains the webhook route along with other V1 routes.
-// To preserve the raw body correctly, mount the webhook route separately
-// before the JSON parser, then mount the remaining V1 routes afterwards.
+// Shopify HMAC verification requires the original raw request body.
 //
+// The webhook route itself uses:
+//
+//   express.raw({
+//     type: 'application/json'
+//   })
+//
+// Therefore it must be registered before the global JSON parser.
+//
+
+app.use(
+  '/v1',
+  v1WebhookRoutes
+);
+
+
 // ============================================================================
-
-const v1WebhookRoutes =
-  require('./src/v1/routes/v1.webhook.routes');
-
-const v1NonWebhookRoutes =
-  require('express').Router();
-
-
+// GLOBAL JSON BODY PARSER
 // ============================================================================
-// JSON BODY PARSER
-// ============================================================================
+//
+// All normal V1 API requests use JSON.
+//
 
 app.use(
   express.json({
     limit: '2mb',
   })
 );
+
+
+// ============================================================================
+// URL-ENCODED BODY PARSER
+// ============================================================================
 
 app.use(
   express.urlencoded({
@@ -224,134 +346,77 @@ app.use(
 app.get(
   '/health',
   (req, res) => {
+
     return res.status(200).json({
+
       success: true,
-      service: 'layboka-ai',
-      version: 'v1',
-      status: 'healthy',
-      environment: NODE_ENV,
-      timestamp: new Date().toISOString(),
+
+      service:
+        'layboka-ai',
+
+      version:
+        'v1',
+
+      status:
+        'healthy',
+
+      environment:
+        NODE_ENV,
+
+      timestamp:
+        new Date().toISOString(),
     });
   }
 );
 
 
 // ============================================================================
-// API HEALTH
+// V1 API HEALTH
 // ============================================================================
 
 app.get(
   '/v1/health',
   (req, res) => {
+
     return res.status(200).json({
+
       success: true,
-      version: 'v1',
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
+
+      service:
+        'layboka-ai',
+
+      version:
+        'v1',
+
+      status:
+        'healthy',
+
+      timestamp:
+        new Date().toISOString(),
     });
   }
 );
 
 
 // ============================================================================
-// V1 WEBHOOK
+// NORMAL V1 API ROUTES
 // ============================================================================
 //
-// This must happen BEFORE express.json().
+// v1.index.js contains:
 //
-// Since the JSON parser above has already been registered in this file,
-// we need the webhook route mounted before that parser.
+// - install
+// - chat
+// - analytics
+// - analytics dashboard
+// - billing
+// - webhook registration/status
 //
-// ============================================================================
-
-/*
- * IMPORTANT:
- *
- * Move this block ABOVE the global express.json() middleware if your
- * existing server.js already has express.json() earlier.
- *
- * In the final production server, the correct order is:
- *
- *   app.use('/v1', v1WebhookRoutes);
- *   app.use(express.json());
- *   app.use('/v1', v1Routes);
- *
- */
-
-
-// ============================================================================
-// V1 ROUTES
-// ============================================================================
+// It intentionally does NOT contain the raw Shopify webhook receiver.
 //
-// The route index contains the webhook route too.
-// Because the JSON parser must not process the webhook first,
-// we use a dedicated route registration strategy below.
-//
-// ============================================================================
-
-
-// ---------------------------------------------------------------------------
-// V1 WEBHOOK
-// ---------------------------------------------------------------------------
 
 app.use(
   '/v1',
-  v1WebhookRoutes
-);
-
-
-// ---------------------------------------------------------------------------
-// V1 REST / API ROUTES
-// ---------------------------------------------------------------------------
-//
-// IMPORTANT:
-// If v1.index also mounts webhookRoutes, Express will encounter the
-// webhook route a second time.
-//
-// Therefore v1.index should preferably NOT mount webhookRoutes when using
-// this server configuration.
-//
-// ---------------------------------------------------------------------------
-
-const installRoutes =
-  require('./src/v1/routes/v1.install.routes');
-
-const chatRoutes =
-  require('./src/v1/routes/v1.chat.routes');
-
-const analyticsRoutes =
-  require('./src/v1/routes/v1.analytics.routes');
-
-const analyticsDashboardRoutes =
-  require('./src/v1/routes/v1.analytics.dashboard.routes');
-
-const billingRoutes =
-  require('./src/v1/routes/v1.billing.routes');
-
-
-app.use(
-  '/v1',
-  installRoutes
-);
-
-app.use(
-  '/v1',
-  chatRoutes
-);
-
-app.use(
-  '/v1',
-  analyticsRoutes
-);
-
-app.use(
-  '/v1',
-  analyticsDashboardRoutes
-);
-
-app.use(
-  '/v1',
-  billingRoutes
+  v1Routes
 );
 
 
@@ -361,10 +426,16 @@ app.use(
 
 app.use(
   (req, res) => {
+
     return res.status(404).json({
+
       success: false,
-      error: 'Route not found',
-      path: req.originalUrl,
+
+      error:
+        'Route not found',
+
+      path:
+        req.originalUrl,
     });
   }
 );
@@ -375,19 +446,75 @@ app.use(
 // ============================================================================
 
 app.use(
-  (error, req, res, next) => {
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
 
     console.error(
       '[Server Error]',
       error
     );
 
-    if (res.headersSent) {
-      return next(error);
+
+    // ------------------------------------------------------------------------
+    // HEADERS ALREADY SENT
+    // ------------------------------------------------------------------------
+
+    if (
+      res.headersSent
+    ) {
+
+      return next(
+        error
+      );
     }
 
+
+    // ------------------------------------------------------------------------
+    // CORS ERROR
+    // ------------------------------------------------------------------------
+
+    if (
+      error.message ===
+      'Not allowed by CORS'
+    ) {
+
+      return res.status(403).json({
+
+        success: false,
+
+        error:
+          'CORS origin not allowed',
+      });
+    }
+
+
+    if (
+      error.message ===
+      'CORS origin not configured'
+    ) {
+
+      return res.status(500).json({
+
+        success: false,
+
+        error:
+          'CORS origin is not configured',
+      });
+    }
+
+
+    // ------------------------------------------------------------------------
+    // GENERIC ERROR
+    // ------------------------------------------------------------------------
+
     return res.status(500).json({
+
       success: false,
+
       error:
         NODE_ENV === 'production'
           ? 'Internal server error'
@@ -398,7 +525,7 @@ app.use(
 
 
 // ============================================================================
-// DATABASE
+// DATABASE CONNECTION
 // ============================================================================
 
 async function connectDatabase() {
@@ -406,9 +533,11 @@ async function connectDatabase() {
   await mongoose.connect(
     MONGODB_URI,
     {
-      serverSelectionTimeoutMS: 10000,
+      serverSelectionTimeoutMS:
+        10000,
     }
   );
+
 
   console.log(
     '[MongoDB] Connected'
@@ -424,12 +553,22 @@ async function startServer() {
 
   try {
 
+    // ------------------------------------------------------------------------
+    // CONNECT DATABASE
+    // ------------------------------------------------------------------------
+
     await connectDatabase();
+
+
+    // ------------------------------------------------------------------------
+    // START HTTP SERVER
+    // ------------------------------------------------------------------------
 
     const server =
       app.listen(
         PORT,
         () => {
+
           console.log(
             '=================================================='
           );
@@ -447,7 +586,15 @@ async function startServer() {
           );
 
           console.log(
-            `API: http://localhost:${PORT}/v1`
+            `API: /v1`
+          );
+
+          console.log(
+            `Health: /health`
+          );
+
+          console.log(
+            `V1 Health: /v1/health`
           );
 
           console.log(
@@ -457,28 +604,37 @@ async function startServer() {
       );
 
 
-    // ------------------------------------------------------------------------
+    // ========================================================================
     // GRACEFUL SHUTDOWN
-    // ------------------------------------------------------------------------
+    // ========================================================================
 
-    async function shutdown(signal) {
+    async function shutdown(
+      signal
+    ) {
 
       console.log(
         `[Server] ${signal} received`
       );
+
 
       server.close(
         async () => {
 
           try {
 
-            await mongoose.connection.close();
+            await mongoose
+              .connection
+              .close();
+
 
             console.log(
               '[MongoDB] Connection closed'
             );
 
-            process.exit(0);
+
+            process.exit(
+              0
+            );
 
           } catch (error) {
 
@@ -487,7 +643,10 @@ async function startServer() {
               error.message
             );
 
-            process.exit(1);
+
+            process.exit(
+              1
+            );
           }
         }
       );
@@ -496,12 +655,19 @@ async function startServer() {
 
     process.once(
       'SIGTERM',
-      () => shutdown('SIGTERM')
+      () =>
+        shutdown(
+          'SIGTERM'
+        )
     );
+
 
     process.once(
       'SIGINT',
-      () => shutdown('SIGINT')
+      () =>
+        shutdown(
+          'SIGINT'
+        )
     );
 
   } catch (error) {
@@ -511,12 +677,23 @@ async function startServer() {
       error
     );
 
-    process.exit(1);
+    process.exit(
+      1
+    );
   }
 }
 
 
+// ============================================================================
+// START
+// ============================================================================
+
 startServer();
 
 
-module.exports = app;
+// ============================================================================
+// EXPORT
+// ============================================================================
+
+module.exports =
+  app;
