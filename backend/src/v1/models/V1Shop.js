@@ -1,27 +1,28 @@
+'use strict';
+
 /**
  * ============================================================================
- * Layboka AI — V1
- * Shopify Shop Model
+ * Layboka AI — V1 Shop Model
  * ============================================================================
  *
  * File:
  * backend/src/v1/models/V1Shop.js
  *
  * Purpose:
- * - Store V1 Shopify merchant information
- * - Store Shopify OAuth credentials
- * - Track 5-day trial
- * - Track subscription status
+ * - Store V1 Shopify shop information
+ * - Store Shopify expiring offline access-token credentials
+ * - Track trial/subscription state
  * - Track product synchronization
  * - Track widget installation
  *
- * This model is intentionally separate from the existing Shop model.
  * ============================================================================
  */
 
-'use strict';
-
 const mongoose = require('mongoose');
+
+const {
+  V1_CONFIG
+} = require('../config/v1.config');
 
 
 // ============================================================================
@@ -30,9 +31,9 @@ const mongoose = require('mongoose');
 
 const V1ShopSchema = new mongoose.Schema(
   {
-    // ------------------------------------------------------------------------
-    // SHOPIFY IDENTIFICATION
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // SHOPIFY SHOP
+    // ========================================================================
 
     shop: {
       type: String,
@@ -40,68 +41,125 @@ const V1ShopSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
-      index: true,
+      index: true
     },
 
     shopifyShopId: {
       type: String,
       required: true,
       unique: true,
-      index: true,
+      index: true
     },
-
-
-    // ------------------------------------------------------------------------
-    // SHOPIFY OAUTH
-    // ------------------------------------------------------------------------
-
-    accessToken: {
-      type: String,
-      required: true,
-
-      // Do not return the access token in normal queries.
-      select: false,
-    },
-
-
-    // ------------------------------------------------------------------------
-    // SHOP INFORMATION
-    // ------------------------------------------------------------------------
 
     shopName: {
       type: String,
-      default: '',
       trim: true,
+      maxlength: 300
     },
 
     email: {
       type: String,
-      default: '',
-      lowercase: true,
       trim: true,
+      lowercase: true,
+      maxlength: 320
     },
 
 
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // SHOPIFY ACCESS TOKEN
+    // ========================================================================
+
+    /*
+     * Shopify now uses expiring offline access tokens for public apps.
+     *
+     * accessToken:
+     * - Short-lived Shopify Admin API access token.
+     * - Hidden from normal queries.
+     */
+
+    accessToken: {
+      type: String,
+      required: true,
+      select: false
+    },
+
+    /*
+     * Refresh token returned by Shopify for expiring offline access.
+     *
+     * Hidden from normal queries.
+     */
+    refreshToken: {
+      type: String,
+      select: false
+    },
+
+    /*
+     * Absolute expiration time of the current access token.
+     */
+    accessTokenExpiresAt: {
+      type: Date,
+      index: true
+    },
+
+    /*
+     * Absolute expiration time of the refresh token.
+     *
+     * Shopify refresh tokens are also expiring credentials.
+     */
+    refreshTokenExpiresAt: {
+      type: Date,
+      index: true
+    },
+
+    /*
+     * Helps identify which token system this shop uses.
+     */
+    tokenType: {
+      type: String,
+      enum: [
+        'expiring_offline',
+        'legacy_offline'
+      ],
+      default: 'expiring_offline',
+      index: true
+    },
+
+    /*
+     * Last successful token refresh.
+     */
+    tokenRefreshedAt: {
+      type: Date
+    },
+
+    /*
+     * Last token refresh failure.
+     *
+     * Do not store sensitive API responses here.
+     */
+    tokenRefreshError: {
+      type: String,
+      maxlength: 1000
+    },
+
+
+    // ========================================================================
     // TRIAL
-    // ------------------------------------------------------------------------
+    // ========================================================================
 
     trialStartedAt: {
       type: Date,
-      default: null,
-      index: true,
+      index: true
     },
 
     trialEndsAt: {
       type: Date,
-      default: null,
-      index: true,
+      index: true
     },
 
 
-    // ------------------------------------------------------------------------
-    // BILLING
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // SUBSCRIPTION
+    // ========================================================================
 
     subscriptionStatus: {
       type: String,
@@ -110,27 +168,27 @@ const V1ShopSchema = new mongoose.Schema(
         'active',
         'expired',
         'cancelled',
-        'past_due',
+        'past_due'
       ],
       default: 'trial',
-      index: true,
+      index: true
     },
 
 
-    // ------------------------------------------------------------------------
-    // AI STATUS
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // AI
+    // ========================================================================
 
     aiEnabled: {
       type: Boolean,
       default: true,
-      index: true,
+      index: true
     },
 
 
-    // ------------------------------------------------------------------------
+    // ========================================================================
     // PRODUCT SYNC
-    // ------------------------------------------------------------------------
+    // ========================================================================
 
     productSyncStatus: {
       type: String,
@@ -138,59 +196,57 @@ const V1ShopSchema = new mongoose.Schema(
         'pending',
         'syncing',
         'completed',
-        'failed',
+        'failed'
       ],
       default: 'pending',
-      index: true,
+      index: true
     },
 
     productSyncStartedAt: {
-      type: Date,
-      default: null,
+      type: Date
     },
 
     productSyncCompletedAt: {
-      type: Date,
-      default: null,
+      type: Date
     },
 
     productSyncError: {
       type: String,
-      default: '',
+      maxlength: 2000
     },
 
 
-    // ------------------------------------------------------------------------
+    // ========================================================================
     // WIDGET
-    // ------------------------------------------------------------------------
+    // ========================================================================
 
     widgetInstalled: {
       type: Boolean,
       default: false,
-      index: true,
+      index: true
     },
 
     widgetInstalledAt: {
-      type: Date,
-      default: null,
+      type: Date
     },
 
 
-    // ------------------------------------------------------------------------
+    // ========================================================================
     // ACTIVITY
-    // ------------------------------------------------------------------------
+    // ========================================================================
 
     lastActiveAt: {
       type: Date,
-      default: null,
-      index: true,
-    },
+      index: true
+    }
   },
 
   {
+    collection: 'v1_shops',
+
     timestamps: true,
 
-    collection: 'v1_shops',
+    versionKey: false
   }
 );
 
@@ -199,70 +255,109 @@ const V1ShopSchema = new mongoose.Schema(
 // INDEXES
 // ============================================================================
 
-// Quickly find shops whose trial has expired.
 V1ShopSchema.index({
   subscriptionStatus: 1,
-  trialEndsAt: 1,
+  trialEndsAt: 1
 });
 
-// Useful for product-sync workers.
 V1ShopSchema.index({
   productSyncStatus: 1,
-  updatedAt: -1,
+  productSyncStartedAt: -1
+});
+
+V1ShopSchema.index({
+  accessTokenExpiresAt: 1,
+  tokenType: 1
+});
+
+V1ShopSchema.index({
+  refreshTokenExpiresAt: 1,
+  tokenType: 1
 });
 
 
 // ============================================================================
-// HELPERS
+// INSTANCE METHODS
 // ============================================================================
 
-/**
- * Return whether the shop currently has an active paid subscription.
- */
-V1ShopSchema.methods.hasActiveSubscription = function () {
-  return this.subscriptionStatus === 'active';
-};
+V1ShopSchema.methods.hasActiveSubscription =
+  function hasActiveSubscription() {
+    return (
+      this.subscriptionStatus ===
+      V1_CONFIG.SUBSCRIPTION.ACTIVE
+    );
+  };
+
+
+V1ShopSchema.methods.isTrialActive =
+  function isTrialActive(now = new Date()) {
+    if (
+      this.subscriptionStatus !==
+      V1_CONFIG.TRIAL.STATUS
+    ) {
+      return false;
+    }
+
+    if (!this.trialEndsAt) {
+      return false;
+    }
+
+    return (
+      new Date(this.trialEndsAt).getTime() >
+      now.getTime()
+    );
+  };
+
+
+V1ShopSchema.methods.canUseAI =
+  function canUseAI(now = new Date()) {
+    if (!this.aiEnabled) {
+      return false;
+    }
+
+    if (this.hasActiveSubscription()) {
+      return true;
+    }
+
+    return this.isTrialActive(now);
+  };
 
 
 /**
- * Return whether the shop's trial is currently active.
+ * Returns true when the Shopify access token should be refreshed.
+ *
+ * A small safety window prevents requests from being made with a token
+ * that is about to expire.
  */
-V1ShopSchema.methods.isTrialActive = function (now = new Date()) {
-  if (this.subscriptionStatus !== 'trial') {
-    return false;
-  }
+V1ShopSchema.methods.isAccessTokenExpired =
+  function isAccessTokenExpired(
+    now = new Date(),
+    safetyWindowMs = 5 * 60 * 1000
+  ) {
+    if (!this.accessTokenExpiresAt) {
+      return false;
+    }
 
-  if (!this.trialEndsAt) {
-    return false;
-  }
+    return (
+      new Date(this.accessTokenExpiresAt).getTime() <=
+      now.getTime() + safetyWindowMs
+    );
+  };
 
-  return new Date(this.trialEndsAt).getTime() > now.getTime();
-};
 
+V1ShopSchema.methods.isRefreshTokenExpired =
+  function isRefreshTokenExpired(
+    now = new Date()
+  ) {
+    if (!this.refreshTokenExpiresAt) {
+      return false;
+    }
 
-/**
- * Return whether AI can currently be used.
- *
- * Paid subscription:
- *   allowed
- *
- * Active trial:
- *   allowed
- *
- * Expired/cancelled/past_due:
- *   blocked
- */
-V1ShopSchema.methods.canUseAI = function (now = new Date()) {
-  if (!this.aiEnabled) {
-    return false;
-  }
-
-  if (this.subscriptionStatus === 'active') {
-    return true;
-  }
-
-  return this.isTrialActive(now);
-};
+    return (
+      new Date(this.refreshTokenExpiresAt).getTime() <=
+      now.getTime()
+    );
+  };
 
 
 // ============================================================================
@@ -271,7 +366,10 @@ V1ShopSchema.methods.canUseAI = function (now = new Date()) {
 
 const V1Shop =
   mongoose.models.V1Shop ||
-  mongoose.model('V1Shop', V1ShopSchema);
+  mongoose.model(
+    'V1Shop',
+    V1ShopSchema
+  );
 
 
 // ============================================================================
