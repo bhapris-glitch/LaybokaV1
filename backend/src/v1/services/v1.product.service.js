@@ -8,15 +8,15 @@
  * backend/src/v1/services/v1.product.service.js
  *
  * Purpose:
- * - Fetch products from Shopify
- * - Normalize Shopify product data
- * - Upsert products into V1Product
- * - Remove products deleted from Shopify
- * - Search merchant products
- * - Retrieve AI-ready product context
+ * - Sync Shopify products
+ * - Keep V1Product collection updated
+ * - Search products
+ * - Build AI product context
+ * - Generate product recommendations
  *
- * IMPORTANT:
- * Every product query is scoped to the merchant's shop domain.
+ * Shopify access tokens are obtained through:
+ * v1.shopify-token.service.js
+ *
  * ============================================================================
  */
 
@@ -24,10 +24,12 @@
 
 const V1Shop = require('../models/V1Shop');
 const V1Product = require('../models/V1Product');
+const { V1_CONFIG } = require('../config/v1.config');
 
 const {
-  V1_CONFIG,
-} = require('../config/v1.config');
+  getValidAccessToken,
+  normalizeShop,
+} = require('./v1.shopify-token.service');
 
 
 // ============================================================================
@@ -38,88 +40,150 @@ const SHOPIFY_API_VERSION =
   process.env.SHOPIFY_API_VERSION || '2026-07';
 
 const DEFAULT_PAGE_SIZE =
-  Number(
-    V1_CONFIG?.PRODUCT_SYNC?.BATCH_SIZE
-  ) || 100;
+  Number(V1_CONFIG.PRODUCT_SYNC?.PAGE_SIZE) || 250;
+
+const MAX_PRODUCTS =
+  Number(V1_CONFIG.PRODUCT_SYNC?.MAX_PRODUCTS) || 10000;
 
 
 // ============================================================================
-// FETCH ALL SHOPIFY PRODUCTS
+// SHOPIFY REQUEST
 // ============================================================================
 
-/**
- * Fetch all products from Shopify Admin REST API.
- *
- * Uses cursor pagination through the Link response header.
- *
- * @param {Object} shop
- * @returns {Promise<Array>}
- */
-async function fetchShopifyProducts(shop) {
-  if (!shop) {
-    throw new Error('Shop is required.');
+async function shopifyRequest(shopOrDomain, path, options = {}) {
+  const shopDomain = normalizeShop(
+    typeof shopOrDomain === 'string'
+      ? shopOrDomain
+      : shopOrDomain.shop
+  );
+
+  if (!shopDomain) {
+    throw new Error('Shopify shop domain is required');
   }
 
-  if (!shop.shop) {
-    throw new Error('Shop domain is required.');
+  const {
+    accessToken,
+  } = await getValidAccessToken(shopDomain);
+
+  const url =
+    `https://${shopDomain}/admin/api/` +
+    `${SHOPIFY_API_VERSION}${path}`;
+
+  const response = await fetch(url, {
+    method: options.method || 'GET',
+
+    headers: {
+      'X-Shopify-Access-Token': accessToken,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(options.headers || {}),
+    },
+
+    body: options.body
+      ? JSON.stringify(options.body)
+      : undefined,
+  });
+
+  let data = null;
+
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
   }
 
-  if (!shop.accessToken) {
+  if (!response.ok) {
+    const errorMessage =
+      data?.errors?.message ||
+      data?.errors ||
+      data?.error ||
+      `Shopify API request failed (${response.status})`;
+
     throw new Error(
-      'Shopify access token is missing.'
+      typeof errorMessage === 'string'
+        ? errorMessage
+        : JSON.stringify(errorMessage)
     );
   }
 
-
-  const products = [];
-
-  let url =
-    `https://${shop.shop}` +
-    `/admin/api/${SHOPIFY_API_VERSION}` +
-    `/products.json` +
-    `?limit=${Math.min(DEFAULT_PAGE_SIZE, 250)}`;
+  return {
+    data,
+    headers: response.headers,
+  };
+}
 
 
-  while (url) {
-    const result =
-      await shopifyRequest(
-        url,
-        shop.accessToken
-      );
+// ============================================================================
+// SHOP RESOLUTION
+// ============================================================================
 
-    const batch =
-      Array.isArray(result.data?.products)
-        ? result.data.products
-        : [];
-
-
-    products.push(...batch);
-
-
-    url =
-      getNextPageUrl(
-        result.linkHeader
-      );
-
-
-    /*
-     * Safety protection.
-     *
-     * A corrupted pagination header should never
-     * cause an infinite synchronization loop.
-     */
-    if (
-      products.length >
-      getMaximumSyncProducts()
-    ) {
-      throw new Error(
-        `Product synchronization exceeded the maximum configured limit of ${getMaximumSyncProducts()} products.`
-      );
-    }
+async function resolveShop(shopOrDomain) {
+  if (!shopOrDomain) {
+    throw new Error('Shop is required');
   }
 
+  if (
+    typeof shopOrDomain === 'object' &&
+    shopOrDomain._id
+  ) {
+    return shopOrDomain;
+  }
 
-  return products;
+  const shopDomain =
+    normalizeShop(shopOrDomain);
+
+  const shop = await V1Shop.findOne({
+    shop: shopDomain,
+  });
+
+  if (!shop) {
+    throw new Error(
+      `V1 shop not found: ${shopDomain}`
+    );
+  }
+
+  return shop;
+}
+
+
+// ============================================================================
+// HTML / TEXT HELPERS
+// ============================================================================
+
+function stripHtml(value = '') {
+  return String(value)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+
+function normalizeTags(tags) {
+  if (!tags) return [];
+
+  if (Array.isArray(tags)) {
+    return tags
+      .map(tag => String(tag).trim())
+      .filter(Boolean);
+  }
+
+  return String(tags)
+    .split(',')
+    .map(tag => tag.trim())
+    .filter(Boolean);
+}
+
+
+function parsePrice(value) {
+  const price = Number(value);
+
+  return Number.isFinite(price)
+    ? price
+    : 0;
 }
 
 
@@ -127,53 +191,27 @@ async function fetchShopifyProducts(shop) {
 // NORMALIZE SHOPIFY PRODUCT
 // ============================================================================
 
-/**
- * Convert Shopify product data into V1Product format.
- *
- * @param {Object} product
- * @param {String} shopDomain
- * @returns {Object|null}
- */
-function normalizeProduct(
-  product,
-  shopDomain
-) {
-  if (!product) {
-    return null;
+function normalizeProduct(product, shopDomain) {
+  if (!product?.id) {
+    throw new Error(
+      'Invalid Shopify product'
+    );
   }
 
-
-  if (!product.id) {
-    return null;
-  }
-
-
-  const variants =
-    Array.isArray(product.variants)
-      ? product.variants
-      : [];
-
-
-  const normalizedVariants =
-    variants.map(
-      (variant) => ({
-        id:
-          String(variant.id),
+  const variants = Array.isArray(product.variants)
+    ? product.variants.map(variant => ({
+        id: String(variant.id),
 
         title:
           variant.title ||
           'Default',
 
         price:
-          parsePrice(
-            variant.price
-          ),
+          parsePrice(variant.price),
 
         compareAtPrice:
           variant.compare_at_price
-            ? parsePrice(
-                variant.compare_at_price
-              )
+            ? parsePrice(variant.compare_at_price)
             : null,
 
         available:
@@ -181,121 +219,81 @@ function normalizeProduct(
 
         inventoryQuantity:
           Number.isFinite(
-            Number(
-              variant.inventory_quantity
-            )
+            Number(variant.inventory_quantity)
           )
-            ? Number(
-                variant.inventory_quantity
-              )
+            ? Number(variant.inventory_quantity)
             : null,
 
         sku:
-          variant.sku ||
-          '',
-      })
-    );
+          variant.sku || null,
+      }))
+    : [];
 
-
-  const prices =
-    normalizedVariants
-      .map(
-        (variant) =>
-          variant.price
-      )
-      .filter(
-        (price) =>
-          Number.isFinite(price)
-      );
-
+  const prices = variants
+    .map(variant => variant.price)
+    .filter(price => price > 0);
 
   const minPrice =
     prices.length
       ? Math.min(...prices)
       : 0;
 
-
   const maxPrice =
     prices.length
       ? Math.max(...prices)
-      : 0;
-
-
-  const images =
-    Array.isArray(product.images)
-      ? product.images
-      : [];
-
+      : minPrice;
 
   const image =
-    images.length
-      ? images[0]?.src || ''
-      : '';
-
-
-  const tags =
-    typeof product.tags === 'string'
-      ? product.tags
-          .split(',')
-          .map(
-            (tag) =>
-              tag.trim()
-          )
-          .filter(Boolean)
-      : Array.isArray(product.tags)
-        ? product.tags
-        : [];
-
+    product.image?.src ||
+    product.images?.[0]?.src ||
+    null;
 
   const available =
-    normalizedVariants.some(
-      (variant) =>
-        variant.available === true
+    variants.some(
+      variant => variant.available
     );
 
+  const status =
+    product.status === 'draft'
+      ? 'draft'
+      : product.status === 'archived'
+        ? 'archived'
+        : 'active';
 
   return {
-    shop:
-      String(shopDomain)
-        .trim()
-        .toLowerCase(),
+    shop: shopDomain,
 
     shopifyProductId:
       String(product.id),
 
     title:
-      product.title ||
-      'Untitled Product',
+      String(product.title || '').trim(),
 
     handle:
-      product.handle ||
-      '',
+      product.handle || null,
 
     description:
       stripHtml(
         product.body_html ||
+        product.body ||
         ''
       ),
 
     vendor:
-      product.vendor ||
-      '',
+      product.vendor || null,
 
     productType:
-      product.product_type ||
-      '',
+      product.product_type || null,
 
-    tags,
+    tags:
+      normalizeTags(product.tags),
 
-    status:
-      normalizeStatus(
-        product.status
-      ),
+    status,
 
     url:
       product.handle
-        ? `/products/${product.handle}`
-        : '',
+        ? `https://${shopDomain}/products/${product.handle}`
+        : null,
 
     image,
 
@@ -305,14 +303,11 @@ function normalizeProduct(
 
     available,
 
-    variants:
-      normalizedVariants,
+    variants,
 
     shopifyUpdatedAt:
       product.updated_at
-        ? new Date(
-            product.updated_at
-          )
+        ? new Date(product.updated_at)
         : null,
 
     lastSyncedAt:
@@ -322,217 +317,215 @@ function normalizeProduct(
 
 
 // ============================================================================
+// FETCH SHOPIFY PRODUCTS
+// ============================================================================
+
+async function fetchShopifyProducts(shopOrDomain) {
+  const shop = await resolveShop(shopOrDomain);
+
+  const products = [];
+
+  let nextPath =
+    `/products.json?limit=${Math.min(
+      DEFAULT_PAGE_SIZE,
+      250
+    )}`;
+
+  while (
+    nextPath &&
+    products.length < MAX_PRODUCTS
+  ) {
+    const result =
+      await shopifyRequest(
+        shop.shop,
+        nextPath
+      );
+
+    const pageProducts =
+      result.data?.products || [];
+
+    products.push(
+      ...pageProducts
+    );
+
+    if (
+      products.length >= MAX_PRODUCTS
+    ) {
+      break;
+    }
+
+    nextPath =
+      getNextPageFromLinkHeader(
+        result.headers
+      );
+  }
+
+  return products.slice(
+    0,
+    MAX_PRODUCTS
+  );
+}
+
+
+// ============================================================================
+// SHOPIFY PAGINATION
+// ============================================================================
+
+function getNextPageFromLinkHeader(headers) {
+  const link =
+    headers?.get?.('link');
+
+  if (!link) {
+    return null;
+  }
+
+  const nextPart =
+    link
+      .split(',')
+      .find(part =>
+        part.includes('rel="next"')
+      );
+
+  if (!nextPart) {
+    return null;
+  }
+
+  const match =
+    nextPart.match(/<([^>]+)>/);
+
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const url =
+      new URL(match[1]);
+
+    return (
+      url.pathname +
+      url.search
+    );
+  } catch {
+    return null;
+  }
+}
+
+
+// ============================================================================
 // SYNC PRODUCTS
 // ============================================================================
 
-/**
- * Complete merchant product synchronization.
- *
- * Process:
- *
- * 1. Load merchant
- * 2. Mark sync as running
- * 3. Fetch Shopify products
- * 4. Normalize products
- * 5. Upsert every product
- * 6. Remove products no longer present in Shopify
- * 7. Mark sync complete
- *
- * @param {String|Object} shopOrDomain
- * @returns {Promise<Object>}
- */
-async function syncProducts(
-  shopOrDomain
-) {
+async function syncProducts(shopOrDomain) {
   const shop =
-    await resolveShopWithToken(
-      shopOrDomain
-    );
+    await resolveShop(shopOrDomain);
 
+  const shopDomain =
+    normalizeShop(shop.shop);
 
-  if (!shop) {
-    throw new Error(
-      'V1 shop not found.'
-    );
-  }
-
-
-  const syncStartedAt =
-    new Date();
-
-
-  shop.productSyncStatus =
-    'syncing';
-
-  shop.productSyncStartedAt =
-    syncStartedAt;
-
-  shop.productSyncError =
-    '';
-
-
-  await shop.save();
-
+  await V1Shop.updateOne(
+    { _id: shop._id },
+    {
+      $set: {
+        productSyncStatus: 'syncing',
+        productSyncError: null,
+      },
+    }
+  );
 
   try {
-    // ------------------------------------------------------------------------
-    // Fetch Shopify catalog
-    // ------------------------------------------------------------------------
-
-    const rawProducts =
+    const shopifyProducts =
       await fetchShopifyProducts(
-        shop
+        shopDomain
       );
 
-
-    // ------------------------------------------------------------------------
-    // Normalize
-    // ------------------------------------------------------------------------
-
-    const products =
-      rawProducts
-        .map(
-          (product) =>
-            normalizeProduct(
-              product,
-              shop.shop
-            )
+    const normalizedProducts =
+      shopifyProducts.map(product =>
+        normalizeProduct(
+          product,
+          shopDomain
         )
-        .filter(Boolean);
+      );
 
-
-    // ------------------------------------------------------------------------
-    // Upsert products
-    // ------------------------------------------------------------------------
-
-    let created = 0;
-    let updated = 0;
-
-
-    if (products.length > 0) {
+    if (normalizedProducts.length) {
       const operations =
-        products.map(
-          (product) => ({
-            updateOne: {
-              filter: {
-                shop:
-                  product.shop,
-
-                shopifyProductId:
-                  product.shopifyProductId,
-              },
-
-              update: {
-                $set:
-                  product,
-              },
-
-              upsert: true,
+        normalizedProducts.map(product => ({
+          updateOne: {
+            filter: {
+              shop: shopDomain,
+              shopifyProductId:
+                product.shopifyProductId,
             },
-          })
-        );
 
+            update: {
+              $set: product,
+            },
 
-      const result =
-        await V1Product.bulkWrite(
-          operations,
-          {
-            ordered: false,
-          }
-        );
+            upsert: true,
+          },
+        }));
 
-
-      created =
-        result.upsertedCount || 0;
-
-      updated =
-        result.modifiedCount || 0;
+      await V1Product.bulkWrite(
+        operations,
+        {
+          ordered: false,
+        }
+      );
     }
 
-
-    // ------------------------------------------------------------------------
-    // Remove products no longer present in Shopify
-    // ------------------------------------------------------------------------
-
-    const shopifyIds =
-      products.map(
-        (product) =>
+    /*
+     * Remove products that no longer exist
+     * in Shopify.
+     */
+    const currentIds =
+      normalizedProducts.map(
+        product =>
           product.shopifyProductId
       );
 
+    if (currentIds.length) {
+      await V1Product.deleteMany({
+        shop: shopDomain,
 
-    const deleteFilter =
-      shopifyIds.length
-        ? {
-            shop:
-              shop.shop,
+        shopifyProductId: {
+          $nin: currentIds,
+        },
+      });
+    } else {
+      /*
+       * If Shopify currently has zero products,
+       * clear the V1 catalog.
+       */
+      await V1Product.deleteMany({
+        shop: shopDomain,
+      });
+    }
 
-            shopifyProductId: {
-              $nin:
-                shopifyIds,
-            },
-          }
-        : {
-            shop:
-              shop.shop,
-          };
-
-
-    const deleteResult =
-      await V1Product.deleteMany(
-        deleteFilter
-      );
-
-
-    // ------------------------------------------------------------------------
-    // Update shop sync status
-    // ------------------------------------------------------------------------
-
-    shop.productSyncStatus =
-      'completed';
-
-    shop.productSyncCompletedAt =
-      new Date();
-
-    shop.productSyncError =
-      '';
-
-    await shop.save();
-
+    await V1Shop.updateOne(
+      { _id: shop._id },
+      {
+        $set: {
+          productSyncStatus: 'completed',
+          productSyncError: null,
+          lastProductSyncAt: new Date(),
+        },
+      }
+    );
 
     return {
       success: true,
-
-      shop:
-        shop.shop,
-
-      count:
-        products.length,
-
-      created,
-
-      updated,
-
-      removed:
-        deleteResult.deletedCount || 0,
-
-      completedAt:
-        shop.productSyncCompletedAt,
+      count: normalizedProducts.length,
     };
   } catch (error) {
-    // ------------------------------------------------------------------------
-    // Sync failed
-    // ------------------------------------------------------------------------
-
-    shop.productSyncStatus =
-      'failed';
-
-    shop.productSyncError =
-      error.message ||
-      'Product synchronization failed.';
-
-    await shop.save();
-
+    await V1Shop.updateOne(
+      { _id: shop._id },
+      {
+        $set: {
+          productSyncStatus: 'failed',
+          productSyncError:
+            error.message,
+        },
+      }
+    );
 
     throw error;
   }
@@ -543,53 +536,38 @@ async function syncProducts(
 // UPSERT SINGLE PRODUCT
 // ============================================================================
 
-/**
- * Used later by Shopify product webhooks.
- *
- * This allows us to update one product without performing
- * a complete catalog synchronization.
- *
- * @param {String} shopDomain
- * @param {Object} shopifyProduct
- * @returns {Promise<Object>}
- */
 async function upsertProduct(
-  shopDomain,
+  shopOrDomain,
   shopifyProduct
 ) {
+  const shopDomain =
+    normalizeShop(
+      typeof shopOrDomain === 'string'
+        ? shopOrDomain
+        : shopOrDomain.shop
+    );
+
   const normalized =
     normalizeProduct(
       shopifyProduct,
       shopDomain
     );
 
-
-  if (!normalized) {
-    throw new Error(
-      'Invalid Shopify product.'
-    );
-  }
-
-
   return V1Product.findOneAndUpdate(
     {
-      shop:
-        normalized.shop,
+      shop: shopDomain,
 
       shopifyProductId:
         normalized.shopifyProductId,
     },
 
     {
-      $set:
-        normalized,
+      $set: normalized,
     },
 
     {
-      upsert: true,
       new: true,
-      runValidators: true,
-      setDefaultsOnInsert: true,
+      upsert: true,
     }
   );
 }
@@ -599,32 +577,19 @@ async function upsertProduct(
 // DELETE PRODUCT
 // ============================================================================
 
-/**
- * Delete one product from the V1 catalog.
- *
- * @param {String} shopDomain
- * @param {String|Number} shopifyProductId
- * @returns {Promise<Object>}
- */
 async function deleteProduct(
-  shopDomain,
+  shopOrDomain,
   shopifyProductId
 ) {
-  if (
-    !shopDomain ||
-    !shopifyProductId
-  ) {
-    throw new Error(
-      'Shop domain and product ID are required.'
+  const shopDomain =
+    normalizeShop(
+      typeof shopOrDomain === 'string'
+        ? shopOrDomain
+        : shopOrDomain.shop
     );
-  }
-
 
   return V1Product.deleteOne({
-    shop:
-      String(shopDomain)
-        .trim()
-        .toLowerCase(),
+    shop: shopDomain,
 
     shopifyProductId:
       String(shopifyProductId),
@@ -636,56 +601,42 @@ async function deleteProduct(
 // GET PRODUCTS
 // ============================================================================
 
-/**
- * Get active products for one merchant.
- *
- * @param {String} shopDomain
- * @param {Object} options
- * @returns {Promise<Array>}
- */
 async function getProducts(
-  shopDomain,
+  shopOrDomain,
   options = {}
 ) {
-  const shop =
-    normalizeShopDomain(
-      shopDomain
+  const shopDomain =
+    normalizeShop(
+      typeof shopOrDomain === 'string'
+        ? shopOrDomain
+        : shopOrDomain.shop
     );
-
 
   const limit =
     Math.min(
-      Math.max(
-        Number(
-          options.limit
-        ) || 100,
-        1
-      ),
-      500
+      Number(options.limit) || 20,
+      100
     );
 
+  const skip =
+    Math.max(
+      Number(options.skip) || 0,
+      0
+    );
 
   const filter = {
-    shop,
+    shop: shopDomain,
   };
 
-
-  if (
-    options.activeOnly !== false
-  ) {
-    filter.status =
-      'active';
-
-    filter.available =
-      true;
+  if (options.activeOnly !== false) {
+    filter.status = 'active';
   }
 
-
-  return V1Product
-    .find(filter)
+  return V1Product.find(filter)
     .sort({
-      updatedAt: -1,
+      lastSyncedAt: -1,
     })
+    .skip(skip)
     .limit(limit)
     .lean();
 }
@@ -695,23 +646,30 @@ async function getProducts(
 // GET PRODUCT
 // ============================================================================
 
-/**
- * Find one merchant product.
- *
- * @param {String} shopDomain
- * @param {String|Number} productId
- * @returns {Promise<Object|null>}
- */
 async function getProduct(
-  shopDomain,
+  shopOrDomain,
   productId
 ) {
-  return V1Product.findForShop(
-    normalizeShopDomain(
-      shopDomain
-    ),
-    productId
-  ).lean();
+  const shopDomain =
+    normalizeShop(
+      typeof shopOrDomain === 'string'
+        ? shopOrDomain
+        : shopOrDomain.shop
+    );
+
+  return V1Product.findOne({
+    shop: shopDomain,
+
+    $or: [
+      {
+        _id: productId,
+      },
+      {
+        shopifyProductId:
+          String(productId),
+      },
+    ],
+  }).lean();
 }
 
 
@@ -719,836 +677,287 @@ async function getProduct(
 // SEARCH PRODUCTS
 // ============================================================================
 
-/**
- * Search products using MongoDB text-like matching.
- *
- * This is deliberately simple for V1.
- * We can introduce vector/semantic search later if required.
- *
- * @param {String} shopDomain
- * @param {String} query
- * @param {Object} options
- * @returns {Promise<Array>}
- */
 async function searchProducts(
-  shopDomain,
+  shopOrDomain,
   query,
   options = {}
 ) {
-  const shop =
-    normalizeShopDomain(
-      shopDomain
+  const shopDomain =
+    normalizeShop(
+      typeof shopOrDomain === 'string'
+        ? shopOrDomain
+        : shopOrDomain.shop
     );
-
 
   const limit =
     Math.min(
-      Math.max(
-        Number(
-          options.limit
-        ) || 10,
-        1
-      ),
+      Number(options.limit) || 10,
       50
     );
 
-
-  const cleanQuery =
-    String(
-      query || ''
-    )
+  const search =
+    String(query || '')
       .trim();
 
-
-  if (!cleanQuery) {
+  if (!search) {
     return getProducts(
-      shop,
+      shopDomain,
       {
         limit,
       }
     );
   }
 
-
-  const words =
-    cleanQuery
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 10);
-
-
   const regex =
-    words
-      .map(
-        (word) =>
-          escapeRegex(word)
-      )
-      .join('|');
+    new RegExp(
+      escapeRegex(search),
+      'i'
+    );
 
+  return V1Product.find({
+    shop: shopDomain,
 
-  return V1Product
-    .find({
-      shop,
+    status: 'active',
 
-      status:
-        'active',
-
-      available:
-        true,
-
-      $or: [
-        {
-          title: {
-            $regex:
-              regex,
-            $options:
-              'i',
-          },
-        },
-
-        {
-          description: {
-            $regex:
-              regex,
-            $options:
-              'i',
-          },
-        },
-
-        {
-          vendor: {
-            $regex:
-              regex,
-            $options:
-              'i',
-          },
-        },
-
-        {
-          productType: {
-            $regex:
-              regex,
-            $options:
-              'i',
-          },
-        },
-
-        {
-          tags: {
-            $regex:
-              regex,
-            $options:
-              'i',
-          },
-        },
-      ],
-    })
+    $or: [
+      {
+        title: regex,
+      },
+      {
+        description: regex,
+      },
+      {
+        vendor: regex,
+      },
+      {
+        productType: regex,
+      },
+      {
+        tags: regex,
+      },
+    ],
+  })
     .limit(limit)
     .lean();
 }
 
 
 // ============================================================================
-// FIND PRODUCTS FOR AI
+// AI PRODUCT CONTEXT
 // ============================================================================
 
-/**
- * Get a compact product catalog for the AI.
- *
- * The AI should receive only the information it actually needs.
- *
- * @param {String} shopDomain
- * @param {Object} options
- * @returns {Promise<Array>}
- */
 async function getAIProductContext(
-  shopDomain,
+  shopOrDomain,
   options = {}
 ) {
-  const limit =
-    Math.min(
-      Math.max(
-        Number(
-          options.limit
-        ) ||
-          Number(
-            V1_CONFIG?.AI
-              ?.MAX_PRODUCTS_IN_CONTEXT
-          ) ||
-          20,
-        1
-      ),
-      100
-    );
-
-
   const products =
     options.query
       ? await searchProducts(
-          shopDomain,
+          shopOrDomain,
           options.query,
-          {
-            limit,
-          }
+          options
         )
       : await getProducts(
-          shopDomain,
+          shopOrDomain,
           {
-            limit,
+            limit:
+              options.limit || 20,
           }
         );
 
-
   return products.map(
-    (product) =>
-      toAIContext(
-        product
-      )
+    product => ({
+      id:
+        product.shopifyProductId,
+
+      title:
+        product.title,
+
+      description:
+        product.description,
+
+      vendor:
+        product.vendor,
+
+      productType:
+        product.productType,
+
+      tags:
+        product.tags,
+
+      price:
+        product.minPrice,
+
+      maxPrice:
+        product.maxPrice,
+
+      available:
+        product.available,
+
+      url:
+        product.url,
+
+      image:
+        product.image,
+
+      variants:
+        product.variants,
+    })
   );
 }
 
 
 // ============================================================================
-// PRODUCT RECOMMENDATIONS
+// RECOMMENDATIONS
 // ============================================================================
 
-/**
- * Basic V1 recommendation engine.
- *
- * Matching priority:
- *
- * 1. Product type
- * 2. Tags
- * 3. Vendor
- * 4. Text relevance
- *
- * @param {String} shopDomain
- * @param {Object} product
- * @param {Object} options
- * @returns {Promise<Array>}
- */
 async function getRecommendations(
-  shopDomain,
+  shopOrDomain,
   product,
   options = {}
 ) {
-  const shop =
-    normalizeShopDomain(
-      shopDomain
+  const shopDomain =
+    normalizeShop(
+      typeof shopOrDomain === 'string'
+        ? shopOrDomain
+        : shopOrDomain.shop
     );
 
+  const currentProduct =
+    typeof product === 'object'
+      ? product
+      : await getProduct(
+          shopDomain,
+          product
+        );
+
+  if (!currentProduct) {
+    return [];
+  }
 
   const limit =
     Math.min(
-      Math.max(
-        Number(
-          options.limit
-        ) || 4,
-        1
-      ),
-      20
+      Number(options.limit) || 4,
+      10
     );
-
-
-  if (!product) {
-    return getProducts(
-      shop,
-      {
-        limit,
-      }
-    );
-  }
-
-
-  const productId =
-    String(
-      product.shopifyProductId ||
-      product.id ||
-      ''
-    );
-
-
-  const productType =
-    String(
-      product.productType ||
-      ''
-    ).trim();
-
-
-  const vendor =
-    String(
-      product.vendor ||
-      ''
-    ).trim();
-
-
-  const tags =
-    Array.isArray(product.tags)
-      ? product.tags
-      : [];
-
-
-  const filters = [
-    {
-      shop,
-      status: 'active',
-      available: true,
-
-      shopifyProductId: {
-        $ne:
-          productId,
-      },
-
-      productType: {
-        $regex:
-          escapeRegex(
-            productType
-          ),
-        $options:
-          'i',
-      },
-    },
-  ];
-
-
-  if (vendor) {
-    filters.push({
-      shop,
-      status: 'active',
-      available: true,
-
-      shopifyProductId: {
-        $ne:
-          productId,
-      },
-
-      vendor: {
-        $regex:
-          escapeRegex(
-            vendor
-          ),
-        $options:
-          'i',
-      },
-    });
-  }
-
 
   const candidates =
-    await V1Product
-      .find({
-        $or:
-          filters,
-      })
-      .limit(
-        limit * 5
-      )
+    await V1Product.find({
+      shop: shopDomain,
+
+      status: 'active',
+
+      available: true,
+
+      shopifyProductId: {
+        $ne:
+          currentProduct.shopifyProductId,
+      },
+
+      $or: [
+        ...(currentProduct.productType
+          ? [
+              {
+                productType:
+                  currentProduct.productType,
+              },
+            ]
+          : []),
+
+        ...(currentProduct.vendor
+          ? [
+              {
+                vendor:
+                  currentProduct.vendor,
+              },
+            ]
+          : []),
+
+        ...(Array.isArray(
+          currentProduct.tags
+        ) &&
+        currentProduct.tags.length
+          ? [
+              {
+                tags: {
+                  $in:
+                    currentProduct.tags,
+                },
+              },
+            ]
+          : []),
+      ],
+    })
+      .limit(30)
       .lean();
 
-
+  /*
+   * Simple deterministic relevance score.
+   * OpenAI does not decide which products exist.
+   */
   const scored =
-    candidates.map(
-      (candidate) => {
-        let score = 0;
+    candidates.map(candidate => {
+      let score = 0;
 
-
-        if (
-          productType &&
-          candidate.productType
-            ?.toLowerCase() ===
-            productType
-              .toLowerCase()
-        ) {
-          score += 5;
-        }
-
-
-        if (
-          vendor &&
-          candidate.vendor
-            ?.toLowerCase() ===
-            vendor
-              .toLowerCase()
-        ) {
-          score += 3;
-        }
-
-
-        const candidateTags =
-          Array.isArray(
-            candidate.tags
-          )
-            ? candidate.tags
-            : [];
-
-
-        const matchingTags =
-          tags.filter(
-            (tag) =>
-              candidateTags.some(
-                (candidateTag) =>
-                  candidateTag
-                    .toLowerCase() ===
-                  String(tag)
-                    .toLowerCase()
-              )
-          );
-
-
-        score +=
-          matchingTags.length * 2;
-
-
-        return {
-          product:
-            candidate,
-
-          score,
-        };
+      if (
+        currentProduct.productType &&
+        candidate.productType ===
+          currentProduct.productType
+      ) {
+        score += 5;
       }
-    );
 
+      if (
+        currentProduct.vendor &&
+        candidate.vendor ===
+          currentProduct.vendor
+      ) {
+        score += 3;
+      }
+
+      const currentTags =
+        new Set(
+          currentProduct.tags || []
+        );
+
+      const sharedTags =
+        (candidate.tags || [])
+          .filter(tag =>
+            currentTags.has(tag)
+          ).length;
+
+      score +=
+        Math.min(
+          sharedTags * 2,
+          6
+        );
+
+      return {
+        ...candidate,
+        _score: score,
+      };
+    });
 
   return scored
     .sort(
       (a, b) =>
-        b.score - a.score
+        b._score - a._score
     )
-    .slice(
-      0,
-      limit
-    )
+    .slice(0, limit)
     .map(
-      (item) =>
-        item.product
+      ({
+        _score,
+        ...product
+      }) => product
     );
 }
 
 
 // ============================================================================
-// AI CONTEXT
+// REGEX SAFETY
 // ============================================================================
 
-function toAIContext(
-  product
-) {
-  return {
-    id:
-      product.shopifyProductId,
-
-    title:
-      product.title,
-
-    description:
-      truncate(
-        product.description,
-        500
-      ),
-
-    vendor:
-      product.vendor,
-
-    productType:
-      product.productType,
-
-    tags:
-      Array.isArray(product.tags)
-        ? product.tags.slice(
-            0,
-            10
-          )
-        : [],
-
-    price: {
-      min:
-        product.minPrice,
-
-      max:
-        product.maxPrice,
-    },
-
-    available:
-      product.available,
-
-    url:
-      product.url,
-
-    image:
-      product.image,
-
-    variants:
-      Array.isArray(
-        product.variants
-      )
-        ? product.variants
-            .slice(
-              0,
-              10
-            )
-            .map(
-              (variant) => ({
-                id:
-                  variant.id,
-
-                title:
-                  variant.title,
-
-                price:
-                  variant.price,
-
-                compareAtPrice:
-                  variant.compareAtPrice,
-
-                available:
-                  variant.available,
-              })
-            )
-        : [],
-  };
-}
-
-
-// ============================================================================
-// SHOPIFY API REQUEST
-// ============================================================================
-
-/**
- * Shopify request wrapper.
- *
- * @param {String} url
- * @param {String} accessToken
- * @returns {Promise<Object>}
- */
-async function shopifyRequest(
-  url,
-  accessToken
-) {
-  const response =
-    await fetch(
-      url,
-      {
-        method:
-          'GET',
-
-        headers: {
-          'X-Shopify-Access-Token':
-            accessToken,
-
-          'Content-Type':
-            'application/json',
-
-          Accept:
-            'application/json',
-        },
-      }
-    );
-
-
-  const data =
-    await parseJson(
-      response
-    );
-
-
-  if (!response.ok) {
-    const errorMessage =
-      data?.errors
-        ? typeof data.errors ===
-          'string'
-          ? data.errors
-          : JSON.stringify(
-              data.errors
-            )
-        : `Shopify API request failed with status ${response.status}.`;
-
-
-    const error =
-      new Error(
-        errorMessage
-      );
-
-
-    error.statusCode =
-      response.status;
-
-
-    error.shopifyResponse =
-      data;
-
-
-    throw error;
-  }
-
-
-  return {
-    data,
-    linkHeader:
-      response.headers.get(
-        'link'
-      ),
-  };
-}
-
-
-// ============================================================================
-// PARSE JSON
-// ============================================================================
-
-async function parseJson(
-  response
-) {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
-
-// ============================================================================
-// SHOPIFY PAGINATION
-// ============================================================================
-
-/**
- * Extract rel="next" from Shopify's Link header.
- *
- * Example:
- *
- * <https://example.myshopify.com/...page_info=abc>; rel="next"
- *
- * @param {String|null} linkHeader
- * @returns {String|null}
- */
-function getNextPageUrl(
-  linkHeader
-) {
-  if (!linkHeader) {
-    return null;
-  }
-
-
-  const links =
-    linkHeader.split(',');
-
-
-  for (const link of links) {
-    const match =
-      link.match(
-        /<([^>]+)>;\s*rel="next"/i
-      );
-
-
-    if (match) {
-      return match[1];
-    }
-  }
-
-
-  return null;
-}
-
-
-// ============================================================================
-// SHOP RESOLUTION
-// ============================================================================
-
-async function resolveShopWithToken(
-  shopOrDomain
-) {
-  if (!shopOrDomain) {
-    return null;
-  }
-
-
-  // Existing mongoose document.
-  if (
-    typeof shopOrDomain ===
-      'object' &&
-    shopOrDomain._id
-  ) {
-    if (
-      shopOrDomain.accessToken
-    ) {
-      return shopOrDomain;
-    }
-
-
-    return V1Shop
-      .findById(
-        shopOrDomain._id
-      )
-      .select(
-        '+accessToken'
-      );
-  }
-
-
-  const shopDomain =
-    normalizeShopDomain(
-      shopOrDomain
-    );
-
-
-  return V1Shop
-    .findOne({
-      shop:
-        shopDomain,
-    })
-    .select(
-      '+accessToken'
-    );
-}
-
-
-// ============================================================================
-// SHOP DOMAIN
-// ============================================================================
-
-function normalizeShopDomain(
-  value
-) {
-  if (!value) {
-    throw new Error(
-      'Shop domain is required.'
-    );
-  }
-
-
-  let domain =
-    String(value)
-      .trim()
-      .toLowerCase();
-
-
-  domain =
-    domain
-      .replace(
-        /^https?:\/\//,
-        ''
-      )
-      .replace(
-        /^www\./,
-        ''
-      )
-      .split('/')[0]
-      .split('?')[0]
-      .split('#')[0];
-
-
-  return domain;
-}
-
-
-// ============================================================================
-// STATUS
-// ============================================================================
-
-function normalizeStatus(
-  status
-) {
-  const allowed = [
-    'active',
-    'draft',
-    'archived',
-  ];
-
-
-  return allowed.includes(
-    status
-  )
-    ? status
-    : 'active';
-}
-
-
-// ============================================================================
-// PRICE
-// ============================================================================
-
-function parsePrice(
-  value
-) {
-  const price =
-    Number.parseFloat(
-      value
-    );
-
-
-  return Number.isFinite(
-    price
-  )
-    ? price
-    : 0;
-}
-
-
-// ============================================================================
-// HTML CLEANER
-// ============================================================================
-
-function stripHtml(
-  value
-) {
-  if (!value) {
-    return '';
-  }
-
-
-  return String(value)
-    .replace(
-      /<[^>]*>/g,
-      ' '
-    )
-    .replace(
-      /\s+/g,
-      ' '
-    )
-    .trim();
-}
-
-
-// ============================================================================
-// TRUNCATE
-// ============================================================================
-
-function truncate(
-  value,
-  maxLength
-) {
-  if (!value) {
-    return '';
-  }
-
-
-  const text =
-    String(value);
-
-
-  if (
-    text.length <=
-    maxLength
-  ) {
-    return text;
-  }
-
-
-  return (
-    text.slice(
-      0,
-      maxLength
-    ) + '...'
-  );
-}
-
-
-// ============================================================================
-// ESCAPE REGEX
-// ============================================================================
-
-function escapeRegex(
-  value
-) {
+function escapeRegex(value) {
   return String(value)
     .replace(
       /[.*+?^${}()|[\]\\]/g,
@@ -1558,43 +967,20 @@ function escapeRegex(
 
 
 // ============================================================================
-// MAXIMUM SYNC SIZE
-// ============================================================================
-
-function getMaximumSyncProducts() {
-  return (
-    Number(
-      V1_CONFIG
-        ?.PRODUCT_SYNC
-        ?.MAX_PRODUCTS
-    ) ||
-    10000
-  );
-}
-
-
-// ============================================================================
 // EXPORTS
 // ============================================================================
 
 module.exports = {
+  shopifyRequest,
+  resolveShop,
   fetchShopifyProducts,
-
   normalizeProduct,
-
   syncProducts,
-
   upsertProduct,
-
   deleteProduct,
-
   getProducts,
-
   getProduct,
-
   searchProducts,
-
   getAIProductContext,
-
   getRecommendations,
 };
