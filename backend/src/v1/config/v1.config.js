@@ -81,6 +81,11 @@ const V1_CONFIG = Object.freeze({
 
     }),
 
+    SUBSCRIPTION: Object.freeze({
+  ACTIVE: 'active',
+  CANCELLED: 'cancelled',
+  PAST_DUE: 'past_due',
+}),
 
     // ------------------------------------------------------------------------
     // AI
