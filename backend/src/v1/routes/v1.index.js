@@ -10,7 +10,11 @@
  * Purpose:
  * - Centralize all V1 routes
  * - Keep server.js clean
- * - Provide one `/v1` route mount
+ * - Register the complete V1 API surface
+ *
+ * IMPORTANT:
+ * Shopify webhook route uses express.raw().
+ * server.js must mount v1.webhook.routes.js BEFORE express.json().
  *
  * ============================================================================
  */
@@ -18,6 +22,13 @@
 'use strict';
 
 const express = require('express');
+
+const router = express.Router();
+
+
+// ============================================================================
+// ROUTES
+// ============================================================================
 
 const installRoutes =
   require('./v1.install.routes');
@@ -31,13 +42,14 @@ const analyticsRoutes =
 const analyticsDashboardRoutes =
   require('./v1.analytics.dashboard.routes');
 
-const webhookRoutes =
-  require('./v1.webhook.routes');
-
 const billingRoutes =
   require('./v1.billing.routes');
 
-const router = express.Router();
+const webhookRoutes =
+  require('./v1.webhook.routes');
+
+const webhookRegistrationRoutes =
+  require('./v1.webhook.registration.routes');
 
 
 // ============================================================================
@@ -77,8 +89,26 @@ router.use(
 
 
 // ============================================================================
+// BILLING
+// ============================================================================
+
+router.use(
+  billingRoutes
+);
+
+
+// ============================================================================
 // SHOPIFY WEBHOOKS
 // ============================================================================
+//
+// NOTE:
+//
+// The actual Shopify webhook endpoint requires raw-body processing.
+//
+// server.js should mount v1.webhook.routes.js BEFORE express.json().
+//
+// The registration/status routes do not require raw-body handling.
+//
 
 router.use(
   webhookRoutes
@@ -86,11 +116,11 @@ router.use(
 
 
 // ============================================================================
-// BILLING
+// WEBHOOK REGISTRATION / STATUS
 // ============================================================================
 
 router.use(
-  billingRoutes
+  webhookRegistrationRoutes
 );
 
 
