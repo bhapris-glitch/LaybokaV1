@@ -1,8 +1,7 @@
-'use strict';
-
 /**
  * ============================================================================
- * Layboka AI — V1 Shopify Webhook Routes
+ * Layboka AI — V1
+ * Shopify Webhook Routes
  * ============================================================================
  *
  * File:
@@ -10,71 +9,88 @@
  *
  * Purpose:
  * - Receive Shopify webhooks
- * - Preserve the raw request body
+ * - Preserve raw request body
  * - Verify Shopify HMAC
- * - Forward verified payloads to V1 webhook controller
+ * - Parse JSON only after verification
+ * - Pass verified payload to webhook controller
  *
  * IMPORTANT:
- * - Do NOT use express.json() before this route.
- * - HMAC must be calculated from the exact raw request body.
+ * This route must be mounted BEFORE global express.json().
  *
  * ============================================================================
  */
 
+'use strict';
+
 const express = require('express');
 
 const {
-  handleWebhook
+  handleWebhook,
 } = require('../controllers/v1.webhook.controller');
 
 const {
-  verifyShopifyWebhook
+  verifyShopifyWebhook,
 } = require('../../../middleware/verifyWebhook');
 
-const router = express.Router();
+const router =
+  express.Router();
 
 
 // ============================================================================
-// WEBHOOK ROUTE
+// SHOPIFY WEBHOOK
 // ============================================================================
 
-/*
- * express.raw() is intentionally used here.
- *
- * Shopify signs the raw HTTP body.
- */
 router.post(
   '/webhooks/shopify',
 
+  /*
+   * Shopify signs the exact raw request body.
+   * Therefore JSON parsing must happen AFTER
+   * HMAC verification.
+   */
   express.raw({
     type: 'application/json',
-    limit: '2mb'
+    limit: '2mb',
   }),
 
+  /*
+   * Existing project middleware.
+   *
+   * This middleware must:
+   * 1. Read req.rawBody / req.body
+   * 2. Validate X-Shopify-Hmac-Sha256
+   * 3. Reject invalid requests
+   */
   verifyShopifyWebhook,
 
   /*
-   * Convert the verified raw body into JSON only AFTER
-   * HMAC verification has completed.
+   * Convert verified raw body into an object.
    */
   (req, res, next) => {
     try {
-      if (!Buffer.isBuffer(req.body)) {
+      if (!req.body) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid webhook body.'
+          error:
+            'Webhook body is missing',
         });
       }
 
-      req.body = JSON.parse(
-        req.body.toString('utf8')
-      );
+      if (
+        Buffer.isBuffer(req.body)
+      ) {
+        req.body =
+          JSON.parse(
+            req.body.toString('utf8')
+          );
+      }
 
       return next();
     } catch (error) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid Shopify webhook JSON.'
+        error:
+          'Invalid webhook JSON payload',
       });
     }
   },
@@ -84,7 +100,7 @@ router.post(
 
 
 // ============================================================================
-// EXPORTS
+// EXPORT
 // ============================================================================
 
 module.exports = router;
