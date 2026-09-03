@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * Layboka AI - V1
+ * Layboka AI — V1
  * Analytics Event Model
  * ============================================================================
  *
@@ -8,22 +8,12 @@
  * backend/src/v1/models/V1AnalyticsEvent.js
  *
  * Purpose:
- * - Store V1 shopper funnel events
- * - Support merchant analytics
- * - Support conversion attribution
- * - Support Shopify purchase verification
+ * - Store V1 funnel analytics events
+ * - Track product interactions
+ * - Track checkout activity
+ * - Record verified Shopify purchases
+ * - Prevent duplicate verified purchase events
  *
- * Collection:
- * v1_analytics_events
- *
- * Funnel events:
- * - widget_open
- * - conversation
- * - product_view
- * - product_click
- * - add_to_cart
- * - checkout
- * - purchase
  * ============================================================================
  */
 
@@ -33,415 +23,340 @@ const mongoose = require('mongoose');
 
 
 // ============================================================================
-// EVENT TYPES
+// CONSTANTS
 // ============================================================================
 
-const EVENT_TYPES = [
+const EVENTS = Object.freeze([
   'widget_open',
   'conversation',
   'product_view',
   'product_click',
   'add_to_cart',
   'checkout',
-  'purchase'
-];
+  'purchase',
+]);
+
+const ATTRIBUTION_SOURCES = Object.freeze([
+  'widget',
+  'shopify_webhook',
+  'system',
+]);
 
 
 // ============================================================================
 // SCHEMA
 // ============================================================================
 
-const V1AnalyticsEventSchema =
-  new mongoose.Schema(
-    {
+const V1AnalyticsEventSchema = new mongoose.Schema(
+  {
+    // ------------------------------------------------------------------------
+    // SHOP
+    // ------------------------------------------------------------------------
 
-      // ----------------------------------------------------------------------
-      // SHOP
-      // ----------------------------------------------------------------------
-
-      shop: {
-        type: String,
-        required: true,
-        lowercase: true,
-        trim: true,
-        index: true
-      },
-
-      shopId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'V1Shop',
-        required: true,
-        index: true
-      },
-
-
-      // ----------------------------------------------------------------------
-      // EVENT
-      // ----------------------------------------------------------------------
-
-      event: {
-        type: String,
-        enum: EVENT_TYPES,
-        required: true,
-        index: true
-      },
-
-
-      // ----------------------------------------------------------------------
-      // VISITOR SESSION
-      // ----------------------------------------------------------------------
-
-      /*
-       * Anonymous browser session identifier.
-       *
-       * This is NOT intended to identify a person.
-       */
-      sessionId: {
-        type: String,
-        required: true,
-        trim: true,
-        maxlength: 200,
-        index: true
-      },
-
-
-      // ----------------------------------------------------------------------
-      // PRODUCT
-      // ----------------------------------------------------------------------
-
-      productId: {
-        type: String,
-        default: null,
-        trim: true,
-        maxlength: 200,
-        index: true
-      },
-
-      shopifyProductId: {
-        type: String,
-        default: null,
-        trim: true,
-        maxlength: 100,
-        index: true
-      },
-
-
-      // ----------------------------------------------------------------------
-      // EVENT METADATA
-      // ----------------------------------------------------------------------
-
-      metadata: {
-        type: mongoose.Schema.Types.Mixed,
-        default: {}
-      },
-
-
-      // ----------------------------------------------------------------------
-      // PURCHASE ATTRIBUTION
-      // ----------------------------------------------------------------------
-
-      /*
-       * These fields are mainly populated when Shopify confirms
-       * an actual order.
-       */
-
-      orderId: {
-        type: String,
-        default: null,
-        trim: true,
-        maxlength: 100,
-        index: true
-      },
-
-      orderNumber: {
-        type: String,
-        default: null,
-        trim: true,
-        maxlength: 100
-      },
-
-      revenue: {
-        type: Number,
-        default: null,
-        min: 0
-      },
-
-      currency: {
-        type: String,
-        default: null,
-        uppercase: true,
-        trim: true,
-        maxlength: 10
-      },
-
-
-      // ----------------------------------------------------------------------
-      // ATTRIBUTION
-      // ----------------------------------------------------------------------
-
-      /*
-       * Set to true only when the purchase has been verified against
-       * Shopify order data.
-       */
-      verified: {
-        type: Boolean,
-        default: false,
-        index: true
-      },
-
-      attributionSource: {
-        type: String,
-        enum: [
-          'widget',
-          'shopify_webhook',
-          'system'
-        ],
-        default: 'widget'
-      },
-
-
-      // ----------------------------------------------------------------------
-      // TIMESTAMP
-      // ----------------------------------------------------------------------
-
-      createdAt: {
-        type: Date,
-        default: Date.now,
-        index: true
-      }
-
+    shop: {
+      type: String,
+      required: true,
+      lowercase: true,
+      trim: true,
+      index: true,
     },
 
-    {
-      collection: 'v1_analytics_events',
+    shopId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'V1Shop',
+      index: true,
+    },
 
-      /*
-       * We explicitly manage createdAt because analytics events should
-       * represent the actual event timestamp.
-       */
-      timestamps: false,
 
-      versionKey: false
-    }
-  );
+    // ------------------------------------------------------------------------
+    // EVENT
+    // ------------------------------------------------------------------------
+
+    event: {
+      type: String,
+      required: true,
+      enum: EVENTS,
+      index: true,
+    },
+
+
+    // ------------------------------------------------------------------------
+    // SESSION
+    // ------------------------------------------------------------------------
+
+    sessionId: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 200,
+      index: true,
+    },
+
+
+    // ------------------------------------------------------------------------
+    // PRODUCT
+    // ------------------------------------------------------------------------
+
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'V1Product',
+      index: true,
+    },
+
+    shopifyProductId: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+
+
+    // ------------------------------------------------------------------------
+    // ORDER
+    // ------------------------------------------------------------------------
+
+    orderId: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+
+    orderNumber: {
+      type: String,
+      trim: true,
+    },
+
+
+    // ------------------------------------------------------------------------
+    // REVENUE
+    // ------------------------------------------------------------------------
+
+    revenue: {
+      type: Number,
+      min: 0,
+    },
+
+    currency: {
+      type: String,
+      uppercase: true,
+      trim: true,
+      maxlength: 10,
+    },
+
+
+    // ------------------------------------------------------------------------
+    // VERIFICATION
+    // ------------------------------------------------------------------------
+
+    verified: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    attributionSource: {
+      type: String,
+      enum: ATTRIBUTION_SOURCES,
+      default: 'widget',
+      index: true,
+    },
+
+
+    // ------------------------------------------------------------------------
+    // EVENT METADATA
+    // ------------------------------------------------------------------------
+
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+
+    // ------------------------------------------------------------------------
+    // TIMESTAMP
+    // ------------------------------------------------------------------------
+
+    createdAt: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+  },
+  {
+    collection: 'v1_analytics_events',
+    versionKey: false,
+  }
+);
 
 
 // ============================================================================
 // INDEXES
 // ============================================================================
 
-/*
- * Merchant funnel analytics by time.
- */
+// General analytics queries.
 V1AnalyticsEventSchema.index({
   shop: 1,
-  createdAt: -1
+  createdAt: -1,
 });
 
 
-/*
- * Merchant + event type + time.
- *
- * Useful for:
- * - widget opens
- * - conversations
- * - product clicks
- * - checkouts
- * - purchases
- */
+// Funnel queries.
 V1AnalyticsEventSchema.index({
   shop: 1,
   event: 1,
-  createdAt: -1
+  createdAt: -1,
 });
 
 
-/*
- * Visitor journey.
- *
- * Allows the system to reconstruct the funnel for one anonymous session.
- */
+// Session funnel queries.
 V1AnalyticsEventSchema.index({
   shop: 1,
   sessionId: 1,
-  createdAt: 1
+  createdAt: -1,
 });
 
 
-/*
- * Product conversion analysis.
- */
+// Product performance queries.
 V1AnalyticsEventSchema.index({
   shop: 1,
   shopifyProductId: 1,
   event: 1,
-  createdAt: -1
+  createdAt: -1,
 });
 
 
-/*
- * Verified revenue queries.
- */
+// Order lookups.
 V1AnalyticsEventSchema.index({
   shop: 1,
-  verified: 1,
-  event: 1,
-  createdAt: -1
-});
-
-
-/*
- * Shopify order lookup.
- *
- * Prevents the same order from becoming difficult to find when a webhook
- * is retried.
- */
-V1AnalyticsEventSchema.index({
-  shop: 1,
-  orderId: 1
+  orderId: 1,
 });
 
 
 // ============================================================================
-// INSTANCE METHODS
+// VERIFIED PURCHASE IDEMPOTENCY
+// ============================================================================
+//
+// Shopify can retry the same webhook.
+//
+// This partial unique index guarantees that one Shopify order can create
+// only one verified purchase event for a shop.
+//
+// The condition is intentionally restricted to:
+// - purchase events
+// - verified events
+// - Shopify webhook attribution
+// - events containing an orderId
+//
+// Widget-side purchase events are NOT affected by this index.
 // ============================================================================
 
-/**
- * Determine whether this event represents a verified purchase.
- */
-V1AnalyticsEventSchema.methods.isVerifiedPurchase =
-  function () {
-
-    return (
-      this.event === 'purchase' &&
-      this.verified === true &&
-      Boolean(this.orderId)
-    );
-  };
-
-
-// ============================================================================
-// STATIC METHODS
-// ============================================================================
-
-/**
- * Get events for a merchant.
- */
-V1AnalyticsEventSchema.statics.findForShop =
-  function (
-    shop,
-    options = {}
-  ) {
-
-    const {
-      event,
-      sessionId,
-      startDate,
-      endDate,
-      limit = 500
-    } = options;
-
-    const query = {
-      shop
-    };
-
-    if (event) {
-      query.event = event;
-    }
-
-    if (sessionId) {
-      query.sessionId = sessionId;
-    }
-
-    if (
-      startDate ||
-      endDate
-    ) {
-
-      query.createdAt = {};
-
-      if (startDate) {
-        query.createdAt.$gte =
-          new Date(startDate);
-      }
-
-      if (endDate) {
-        query.createdAt.$lte =
-          new Date(endDate);
-      }
-    }
-
-    return this.find(query)
-      .sort({
-        createdAt: -1
-      })
-      .limit(
-        Math.min(
-          Math.max(
-            Number(limit) || 500,
-            1
-          ),
-          5000
-        )
-      )
-      .lean();
-  };
-
-
-/**
- * Get verified purchases for a merchant.
- */
-V1AnalyticsEventSchema.statics.findVerifiedPurchases =
-  function (
-    shop,
-    options = {}
-  ) {
-
-    const {
-      startDate,
-      endDate,
-      limit = 500
-    } = options;
-
-    const query = {
-      shop,
+V1AnalyticsEventSchema.index(
+  {
+    shop: 1,
+    event: 1,
+    orderId: 1,
+    verified: 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: {
+      verified: true,
+      attributionSource: 'shopify_webhook',
       event: 'purchase',
-      verified: true
-    };
+      orderId: {
+        $exists: true,
+      },
+    },
+  }
+);
 
-    if (
-      startDate ||
-      endDate
-    ) {
 
-      query.createdAt = {};
+// ============================================================================
+// METHODS
+// ============================================================================
 
-      if (startDate) {
-        query.createdAt.$gte =
-          new Date(startDate);
-      }
+/**
+ * Check whether this event is a verified purchase.
+ */
+V1AnalyticsEventSchema.methods.isVerifiedPurchase = function () {
+  return (
+    this.event === 'purchase' &&
+    this.verified === true &&
+    this.attributionSource === 'shopify_webhook'
+  );
+};
 
-      if (endDate) {
-        query.createdAt.$lte =
-          new Date(endDate);
-      }
+
+// ============================================================================
+// STATICS
+// ============================================================================
+
+/**
+ * Find analytics events for a shop.
+ */
+V1AnalyticsEventSchema.statics.findForShop = function (
+  shop,
+  options = {}
+) {
+  const query = {
+    shop: String(shop).toLowerCase().trim(),
+  };
+
+  if (options.event) {
+    query.event = options.event;
+  }
+
+  if (options.sessionId) {
+    query.sessionId = options.sessionId;
+  }
+
+  if (options.startDate || options.endDate) {
+    query.createdAt = {};
+
+    if (options.startDate) {
+      query.createdAt.$gte = new Date(options.startDate);
     }
 
-    return this.find(query)
-      .sort({
-        createdAt: -1
-      })
-      .limit(
-        Math.min(
-          Math.max(
-            Number(limit) || 500,
-            1
-          ),
-          5000
-        )
-      )
-      .lean();
+    if (options.endDate) {
+      query.createdAt.$lte = new Date(options.endDate);
+    }
+  }
+
+  return this.find(query)
+    .sort({ createdAt: -1 })
+    .limit(options.limit || 1000);
+};
+
+
+/**
+ * Find verified Shopify purchases.
+ */
+V1AnalyticsEventSchema.statics.findVerifiedPurchases = function (
+  shop,
+  options = {}
+) {
+  const query = {
+    shop: String(shop).toLowerCase().trim(),
+    event: 'purchase',
+    verified: true,
+    attributionSource: 'shopify_webhook',
   };
+
+  if (options.startDate || options.endDate) {
+    query.createdAt = {};
+
+    if (options.startDate) {
+      query.createdAt.$gte = new Date(options.startDate);
+    }
+
+    if (options.endDate) {
+      query.createdAt.$lte = new Date(options.endDate);
+    }
+  }
+
+  return this.find(query)
+    .sort({ createdAt: -1 })
+    .limit(options.limit || 1000);
+};
 
 
 // ============================================================================
@@ -457,8 +372,7 @@ const V1AnalyticsEvent =
 
 
 // ============================================================================
-// EXPORT
+// EXPORTS
 // ============================================================================
 
-module.exports =
-  V1AnalyticsEvent;
+module.exports = V1AnalyticsEvent;
