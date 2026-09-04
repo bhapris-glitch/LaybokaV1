@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * Layboka AI — V1
+ * LaybokaV1 — V1
  * Frontend Configuration
  * ============================================================================
  *
@@ -8,30 +8,47 @@
  * frontend/src/lib/config.ts
  *
  * Purpose:
- * - Centralize frontend configuration
- * - Define the V1 backend URL
- * - Define API endpoints
- * - Keep API paths consistent across services
+ * - Central application configuration
+ * - Backend API URL
+ * - Frontend routes
+ * - V1 API endpoints
+ * - Shopify installation URL
+ * - Brand configuration
  *
  * IMPORTANT:
- * Only PUBLIC configuration belongs here.
  *
- * NEVER put:
- * - OpenAI API keys
- * - Shopify API secrets
- * - Shopify access tokens
- * - Stripe secret keys
- * - MongoDB credentials
+ * NEXT_PUBLIC_API_URL must be the REAL PUBLIC BACKEND URL.
+ *
+ * Example during development:
+ *
+ * NEXT_PUBLIC_API_URL=http://localhost:5000
+ *
+ * Example production:
+ *
+ * NEXT_PUBLIC_API_URL=https://api.laybokav1.com
+ *
+ * OR use the Railway-generated backend URL if you have not yet
+ * connected a custom API domain.
+ *
+ * Do NOT use:
+ *
+ * https://Laybokav1/backend.com
+ *
+ * unless that is an actual domain you own and have configured.
  *
  * ============================================================================
  */
+
+'use client';
+
 
 // ============================================================================
 // ENVIRONMENT
 // ============================================================================
 
 const rawApiUrl =
-  process.env.NEXT_PUBLIC_API_URL?.trim();
+  process.env.NEXT_PUBLIC_API_URL ||
+  'http://localhost:5000';
 
 
 // ============================================================================
@@ -39,68 +56,117 @@ const rawApiUrl =
 // ============================================================================
 
 function normalizeApiUrl(
-  value?: string
+  value: string
 ): string {
 
-  if (!value) {
-
-    /*
-     * Development fallback.
-     *
-     * In production, NEXT_PUBLIC_API_URL must be configured
-     * in Vercel.
-     */
-
-    return 'http://localhost:5000';
-  }
-
-
   return value
+    .trim()
     .replace(/\/+$/, '');
 }
 
 
-const API_BASE_URL =
+export const API_URL =
   normalizeApiUrl(
     rawApiUrl
   );
 
 
 // ============================================================================
-// API CONFIG
+// BRAND
 // ============================================================================
 
-export const API_CONFIG = {
+export const BRAND = {
 
-  baseUrl:
-    API_BASE_URL,
+  name: 'LaybokaV1',
 
-  version:
-    'v1',
+  logo: 'LaybokaV1',
 
-  timeout:
-    30000,
+  primary: '#FF4616',
 
-  analyticsTimeout:
-    10000,
+  background: '#040501',
+
+  tagline:
+    'Turn Visitors Into Buyers',
+
+  description:
+    'AI Sales Agent for Shopify stores.',
 
 } as const;
 
 
 // ============================================================================
-// API ENDPOINTS
+// TRIAL
+// ============================================================================
+
+export const TRIAL = {
+
+  days: 5,
+
+  label: '5-Day Free Trial',
+
+} as const;
+
+
+// ============================================================================
+// FRONTEND ROUTES
+// ============================================================================
+
+export const ROUTES = {
+
+  home:
+    '/',
+
+  pricing:
+    '/pricing',
+
+  login:
+    '/login',
+
+  register:
+    '/register',
+
+  dashboard:
+    '/dashboard',
+
+  install:
+    '/install',
+
+  success:
+    '/install/success',
+
+  documentation:
+    '/documentation',
+
+  contact:
+    '/contact',
+
+  privacy:
+    '/privacy',
+
+  terms:
+    '/terms',
+
+} as const;
+
+
+// ============================================================================
+// V1 API ROOT
 // ============================================================================
 //
-// IMPORTANT:
-// These paths are relative to /v1.
+// The V1 backend uses /v1.
 //
 // Example:
 //
-// API_BASE_URL = https://api.example.com
+// https://api.laybokav1.com/v1
 //
-// API_ENDPOINTS.health
-// → https://api.example.com/v1/health
-//
+// ============================================================================
+
+export const API_V1 =
+  `${API_URL}/v1`;
+
+
+// ============================================================================
+// API ENDPOINTS
 // ============================================================================
 
 export const API_ENDPOINTS = {
@@ -110,46 +176,39 @@ export const API_ENDPOINTS = {
   // --------------------------------------------------------------------------
 
   health:
-    '/health',
+    `${API_URL}/health`,
+
+
+  // --------------------------------------------------------------------------
+  // V1 root
+  // --------------------------------------------------------------------------
+
+  v1:
+    API_V1,
 
 
   // --------------------------------------------------------------------------
   // Shopify Installation
   // --------------------------------------------------------------------------
+  //
+  // GET /v1/install?shop=store.myshopify.com
+  //
+  // The browser should navigate directly to this endpoint.
+  //
 
   install:
-    `${API_BASE_URL}/v1/install`,
+    `${API_V1}/install`,
 
-  installStatus:
-    '/install/status',
-
-
-  // --------------------------------------------------------------------------
-  // Authentication
-  // --------------------------------------------------------------------------
-
-  login:
-    '/auth/login',
-
-  register:
-    '/auth/register',
-
-  logout:
-    '/auth/logout',
-
-  me:
-    '/auth/me',
+  installCallback:
+    `${API_V1}/install/callback`,
 
 
   // --------------------------------------------------------------------------
-  // Chat / AI Sales Agent
+  // Chat
   // --------------------------------------------------------------------------
 
   chat:
-    '/chat',
-
-  chatStatus:
-    '/chat/status',
+    `${API_V1}/chat`,
 
 
   // --------------------------------------------------------------------------
@@ -157,113 +216,150 @@ export const API_ENDPOINTS = {
   // --------------------------------------------------------------------------
 
   products:
-    '/products',
-
-  featuredProducts:
-    '/products/featured',
-
-
-  // --------------------------------------------------------------------------
-  // Analytics
-  // --------------------------------------------------------------------------
-
-  analyticsEvent:
-    '/analytics/event',
-
-  analyticsEvents:
-    '/analytics/events',
-
-  analyticsDashboard:
-    '/analytics/dashboard',
-
-  analyticsFunnel:
-    '/analytics/funnel',
-
-  analyticsProducts:
-    '/analytics/products',
-
-  analyticsDaily:
-    '/analytics/daily',
+    `${API_V1}/products`,
 
 
   // --------------------------------------------------------------------------
   // Billing
   // --------------------------------------------------------------------------
 
-  billingStatus:
-    '/billing/status',
+  billing:
+    `${API_V1}/billing`,
+
+  billingPlans:
+    `${API_V1}/billing/plans`,
 
   billingCheckout:
-    '/billing/checkout',
+    `${API_V1}/billing/checkout`,
 
-  billingPortal:
-    '/billing/portal',
+  billingSubscription:
+    `${API_V1}/billing/subscription`,
+
+  billingCancel:
+    `${API_V1}/billing/cancel`,
 
 
   // --------------------------------------------------------------------------
-  // Merchant
+  // Analytics
   // --------------------------------------------------------------------------
 
-  merchant:
-    '/merchant',
+  analytics:
+    `${API_V1}/analytics`,
 
-  merchantSettings:
-    '/merchant/settings',
+
+  // --------------------------------------------------------------------------
+  // Store
+  // --------------------------------------------------------------------------
+
+  store:
+    `${API_V1}/store`,
 
 } as const;
 
 
 // ============================================================================
-// FULL API URL HELPER
+// SHOPIFY INSTALL URL
 // ============================================================================
 
-export function getApiUrl(
-  endpoint: string
+/**
+ * Build the backend Shopify installation URL.
+ *
+ * IMPORTANT:
+ *
+ * Do not call Shopify directly from the browser.
+ *
+ * Browser
+ *   ↓
+ * Layboka backend /v1/install
+ *   ↓
+ * Shopify OAuth
+ *
+ * The backend owns Shopify credentials and OAuth state.
+ */
+
+export function getInstallApiUrl(
+  shop: string
 ): string {
 
-  const normalizedEndpoint =
-    endpoint.startsWith('/')
-      ? endpoint
-      : `/${endpoint}`;
+  const params =
+    new URLSearchParams();
+
+  params.set(
+    'shop',
+    shop
+  );
 
 
   return (
-    `${API_CONFIG.baseUrl}` +
-    `/v1` +
-    normalizedEndpoint
+    `${API_ENDPOINTS.install}?` +
+    params.toString()
   );
 }
 
 
 // ============================================================================
-// INSTALL URL HELPER
+// API URL BUILDER
 // ============================================================================
-//
-// Unlike normal API requests, this endpoint is intentionally represented
-// as a complete URL because the browser may redirect directly to it.
-//
 
-export function getInstallApiUrl(
-  shop?: string
+/**
+ * Safely build an API URL from an endpoint and optional path.
+ *
+ * Example:
+ *
+ * buildApiUrl(API_ENDPOINTS.products, '123')
+ *
+ * becomes:
+ *
+ * https://api.example.com/v1/products/123
+ */
+
+export function buildApiUrl(
+  endpoint: string,
+  path?: string
 ): string {
 
-  const url =
-    new URL(
-      `${API_CONFIG.baseUrl}/v1/install`
+  const base =
+    endpoint.replace(
+      /\/+$/,
+      ''
     );
 
 
-  if (shop) {
+  if (!path) {
 
-    url.searchParams.set(
-      'shop',
-      shop
-    );
+    return base;
   }
 
 
-  return url.toString();
+  return (
+    `${base}/` +
+    encodeURIComponent(
+      path
+    )
+  );
 }
+
+
+// ============================================================================
+// API REQUEST CONFIG
+// ============================================================================
+
+export const API_CONFIG = {
+
+  credentials:
+    'include' as RequestCredentials,
+
+  headers: {
+
+    'Content-Type':
+      'application/json',
+
+    Accept:
+      'application/json',
+
+  },
+
+} as const;
 
 
 // ============================================================================
@@ -273,73 +369,295 @@ export function getInstallApiUrl(
 export const APP_CONFIG = {
 
   name:
-    'Layboka AI',
+    BRAND.name,
 
-  website:
-    'https://laybokav1.com',
+  version:
+    '1.0.0',
+
+  environment:
+    process.env.NODE_ENV ||
+    'development',
+
+  apiUrl:
+    API_URL,
+
+  apiVersion:
+    'v1',
 
   trialDays:
-    5,
+    TRIAL.days,
 
-  supportEmail:
-    'support@laybokav1.com',
+  currency:
+    'USD',
+
+  supportedCurrencies:
+    [
+      'USD',
+      'INR',
+    ],
 
 } as const;
 
 
 // ============================================================================
-// DEVELOPMENT HELPERS
+// PRICING
+// ============================================================================
+//
+// These are the V1 public prices.
+// Keep pricing centralized here so the pricing page,
+// checkout UI and future dashboard do not hard-code different values.
+//
 // ============================================================================
 
-export const IS_DEVELOPMENT =
-  process.env.NODE_ENV ===
-  'development';
+export const PLANS = {
+
+  starter: {
+
+    id:
+      'starter',
+
+    name:
+      'Starter',
+
+    description:
+      'AI sales assistance for growing Shopify stores.',
+
+    monthlyUSD:
+      8,
+
+    monthlyINR:
+      699,
+
+    features: [
+
+      '24/7 AI Sales Agent',
+
+      'Shopify product knowledge',
+
+      'Product recommendations',
+
+      'Upselling & cross-selling',
+
+      'Basic sales analytics',
+
+    ],
+
+  },
 
 
-export const IS_PRODUCTION =
-  process.env.NODE_ENV ===
-  'production';
+  growth: {
+
+    id:
+      'growth',
+
+    name:
+      'Growth',
+
+    description:
+      'More automation and higher sales capacity.',
+
+    monthlyUSD:
+      25,
+
+    monthlyINR:
+      2199,
+
+    features: [
+
+      'Everything in Starter',
+
+      'Higher conversation limits',
+
+      'Cart recovery assistance',
+
+      'Conversion analytics',
+
+      'Advanced recommendations',
+
+    ],
+
+  },
+
+
+  pro: {
+
+    id:
+      'pro',
+
+    name:
+      'Pro',
+
+    description:
+      'Advanced AI sales automation for scaling stores.',
+
+    monthlyUSD:
+      59,
+
+    monthlyINR:
+      5199,
+
+    features: [
+
+      'Everything in Growth',
+
+      'Advanced sales insights',
+
+      'Priority AI processing',
+
+      'Higher usage limits',
+
+      'Advanced sales automation',
+
+    ],
+
+  },
+
+
+  enterprise: {
+
+    id:
+      'enterprise',
+
+    name:
+      'Enterprise',
+
+    description:
+      'Custom AI sales infrastructure for larger businesses.',
+
+    monthlyUSD:
+      null,
+
+    monthlyINR:
+      null,
+
+    features: [
+
+      'Everything in Pro',
+
+      'Custom usage limits',
+
+      'Custom integrations',
+
+      'Dedicated support',
+
+    ],
+
+  },
+
+} as const;
 
 
 // ============================================================================
-// VALIDATION
+// TYPE HELPERS
+// ============================================================================
+
+export type PlanId =
+  keyof typeof PLANS;
+
+
+export type SupportedCurrency =
+  APP_CONFIG['supportedCurrencies'][number];
+
+
+// ============================================================================
+// RUNTIME CONFIG CHECK
 // ============================================================================
 
 /**
- * Returns true when the application has a configured public API URL.
+ * Returns true when a production API URL has been configured.
  *
- * localhost is considered valid during development.
+ * This is useful for showing a clear configuration error rather than
+ * silently sending production users to localhost.
  */
 
-export function hasApiConfiguration(): boolean {
+export function isProductionApiConfigured():
+  boolean {
 
-  return Boolean(
-    rawApiUrl
+  if (
+    process.env.NODE_ENV !==
+    'production'
+  ) {
+
+    return true;
+  }
+
+
+  return (
+    Boolean(
+      process.env.NEXT_PUBLIC_API_URL
+    ) &&
+    !API_URL.includes(
+      'localhost'
+    ) &&
+    !API_URL.includes(
+      '127.0.0.1'
+    )
   );
 }
 
 
 // ============================================================================
-// EXPORT DEFAULT
+// CONFIG VALIDATION
+// ============================================================================
+
+export function validateFrontendConfig():
+  void {
+
+  if (
+    typeof window === 'undefined'
+  ) {
+
+    return;
+  }
+
+
+  if (
+    process.env.NODE_ENV ===
+    'production' &&
+    !isProductionApiConfigured()
+  ) {
+
+    console.error(
+      '[LaybokaV1] NEXT_PUBLIC_API_URL is not configured for production.'
+    );
+
+  }
+
+}
+
+
+// ============================================================================
+// EXPORT
 // ============================================================================
 
 const config = {
 
-  API_CONFIG,
+  API_URL,
+
+  API_V1,
 
   API_ENDPOINTS,
 
+  API_CONFIG,
+
   APP_CONFIG,
 
-  IS_DEVELOPMENT,
+  BRAND,
 
-  IS_PRODUCTION,
+  TRIAL,
 
-  getApiUrl,
+  PLANS,
+
+  ROUTES,
 
   getInstallApiUrl,
 
-  hasApiConfiguration,
+  buildApiUrl,
+
+  isProductionApiConfigured,
+
+  validateFrontendConfig,
+
 };
 
 
