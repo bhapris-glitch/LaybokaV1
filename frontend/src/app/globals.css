@@ -1,0 +1,898 @@
+/**
+ * ============================================================================
+ * Layboka AI — V1
+ * Global Styles
+ * ============================================================================
+ *
+ * File:
+ * frontend/src/app/globals.css
+ *
+ * Design:
+ * - Background: #040501
+ * - Primary:    #FF4616
+ * - Dark premium SaaS aesthetic
+ * - Responsive
+ * - Accessible focus states
+ * - Reusable buttons/cards/layout utilities
+ *
+ * ============================================================================
+ */
+
+@import "tailwindcss";
+
+
+/* ============================================================================
+   DESIGN TOKENS
+   ============================================================================ */
+
+:root {
+  --background: #040501;
+  --foreground: #f7f7f5;
+
+  --primary: #ff4616;
+  --primary-hover: #ff5a2f;
+  --primary-dark: #d9360b;
+
+  --surface: #0a0b07;
+  --surface-2: #10110c;
+  --surface-3: #151611;
+
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.15);
+
+  --muted: #a7a9a1;
+  --muted-dark: #73756d;
+
+  --success: #35d07f;
+  --danger: #ff4d4d;
+  --warning: #ffb020;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  --container: 1200px;
+}
+
+
+/* ============================================================================
+   RESET
+   ============================================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+
+html {
+  scroll-behavior: smooth;
+}
+
+
+html,
+body {
+  min-height: 100%;
+}
+
+
+body {
+  margin: 0;
+
+  background:
+    radial-gradient(
+      circle at 50% -20%,
+      rgba(255, 70, 22, 0.08),
+      transparent 38%
+    ),
+    var(--background);
+
+  color: var(--foreground);
+
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+
+  line-height: 1.6;
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  overflow-x: hidden;
+}
+
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+
+button {
+  border: 0;
+}
+
+
+button:not(:disabled),
+a {
+  cursor: pointer;
+}
+
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+
+img {
+  height: auto;
+}
+
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+
+/* ============================================================================
+   SELECTION
+   ============================================================================ */
+
+::selection {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+
+/* ============================================================================
+   SCROLLBAR
+   ============================================================================ */
+
+::-webkit-scrollbar {
+  width: 9px;
+}
+
+
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+
+::-webkit-scrollbar-thumb {
+  background: #262720;
+  border-radius: 999px;
+}
+
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+
+/* ============================================================================
+   FOCUS
+   ============================================================================ */
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+
+/* ============================================================================
+   GLOBAL CONTAINER
+   ============================================================================ */
+
+.container {
+  width: min(
+    calc(100% - 40px),
+    var(--container)
+  );
+
+  margin-inline: auto;
+}
+
+
+/* ============================================================================
+   SECTIONS
+   ============================================================================ */
+
+.section {
+  position: relative;
+
+  padding: 100px 0;
+}
+
+
+.section-sm {
+  padding: 70px 0;
+}
+
+
+.section-lg {
+  padding: 140px 0;
+}
+
+
+/* ============================================================================
+   SECTION HEADER
+   ============================================================================ */
+
+.section-header {
+  max-width: 720px;
+
+  margin:
+    0 auto 56px;
+
+  text-align: center;
+}
+
+
+.section-eyebrow {
+  display: inline-flex;
+
+  align-items: center;
+  justify-content: center;
+
+  gap: 8px;
+
+  margin-bottom: 16px;
+
+  color: var(--primary);
+
+  font-size: 13px;
+  font-weight: 800;
+
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+
+.section-title {
+  margin: 0;
+
+  color: var(--foreground);
+
+  font-size: clamp(
+    32px,
+    5vw,
+    54px
+  );
+
+  font-weight: 800;
+
+  letter-spacing: -0.045em;
+
+  line-height: 1.05;
+}
+
+
+.section-description {
+  margin:
+    20px auto 0;
+
+  max-width: 650px;
+
+  color: var(--muted);
+
+  font-size: 17px;
+
+  line-height: 1.75;
+}
+
+
+/* ============================================================================
+   GRADIENT TEXT
+   ============================================================================ */
+
+.gradient-text {
+  background:
+    linear-gradient(
+      90deg,
+      #ff4616 0%,
+      #ff734c 50%,
+      #ff4616 100%
+    );
+
+  -webkit-background-clip: text;
+  background-clip: text;
+
+  color: transparent;
+}
+
+
+/* ============================================================================
+   BUTTON BASE
+   ============================================================================ */
+
+.btn {
+  display: inline-flex;
+
+  align-items: center;
+  justify-content: center;
+
+  gap: 9px;
+
+  min-height: 48px;
+
+  padding:
+    0 22px;
+
+  border-radius: 12px;
+
+  font-size: 15px;
+  font-weight: 750;
+
+  line-height: 1;
+
+  white-space: nowrap;
+
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease;
+
+  user-select: none;
+}
+
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+
+/* ============================================================================
+   PRIMARY BUTTON
+   ============================================================================ */
+
+.btn-primary {
+  background: var(--primary);
+
+  color: #ffffff;
+
+  box-shadow:
+    0 10px 30px
+    rgba(255, 70, 22, 0.20);
+}
+
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+
+  transform: translateY(-2px);
+
+  box-shadow:
+    0 14px 38px
+    rgba(255, 70, 22, 0.28);
+}
+
+
+/* ============================================================================
+   SECONDARY BUTTON
+   ============================================================================ */
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.045);
+
+  border: 1px solid var(--border);
+
+  color: var(--foreground);
+}
+
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+
+  border-color: var(--border-strong);
+
+  transform: translateY(-2px);
+}
+
+
+/* ============================================================================
+   GHOST BUTTON
+   ============================================================================ */
+
+.btn-ghost {
+  background: transparent;
+
+  color: var(--muted);
+}
+
+
+.btn-ghost:hover {
+  color: var(--foreground);
+
+  background:
+    rgba(255, 255, 255, 0.04);
+}
+
+
+/* ============================================================================
+   GLASS CARD
+   ============================================================================ */
+
+.glass-card {
+  background:
+    linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.055),
+      rgba(255, 255, 255, 0.018)
+    );
+
+  border: 1px solid var(--border);
+
+  border-radius: var(--radius-lg);
+
+  box-shadow:
+    0 20px 60px
+    rgba(0, 0, 0, 0.20);
+
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+
+/* ============================================================================
+   CARD
+   ============================================================================ */
+
+.card {
+  background: var(--surface);
+
+  border:
+    1px solid var(--border);
+
+  border-radius: var(--radius-lg);
+
+  transition:
+    transform 200ms ease,
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+
+.card:hover {
+  transform: translateY(-3px);
+
+  border-color:
+    rgba(255, 70, 22, 0.25);
+
+  box-shadow:
+    0 20px 55px
+    rgba(0, 0, 0, 0.25);
+}
+
+
+/* ============================================================================
+   ICON CONTAINER
+   ============================================================================ */
+
+.icon-box {
+  display: inline-flex;
+
+  align-items: center;
+  justify-content: center;
+
+  width: 46px;
+  height: 46px;
+
+  border-radius: 13px;
+
+  background:
+    rgba(255, 70, 22, 0.10);
+
+  color: var(--primary);
+
+  border:
+    1px solid
+    rgba(255, 70, 22, 0.18);
+}
+
+
+.icon-box-lg {
+  width: 56px;
+  height: 56px;
+
+  border-radius: 16px;
+}
+
+
+/* ============================================================================
+   BADGE
+   ============================================================================ */
+
+.badge {
+  display: inline-flex;
+
+  align-items: center;
+
+  gap: 7px;
+
+  min-height: 30px;
+
+  padding:
+    0 11px;
+
+  border-radius: 999px;
+
+  background:
+    rgba(255, 70, 22, 0.09);
+
+  border:
+    1px solid
+    rgba(255, 70, 22, 0.20);
+
+  color: var(--primary);
+
+  font-size: 12px;
+
+  font-weight: 750;
+
+  letter-spacing: 0.02em;
+}
+
+
+/* ============================================================================
+   ORANGE GLOW
+   ============================================================================ */
+
+.primary-glow {
+  box-shadow:
+    0 0 80px
+    rgba(255, 70, 22, 0.12);
+}
+
+
+.primary-glow-small {
+  box-shadow:
+    0 0 40px
+    rgba(255, 70, 22, 0.14);
+}
+
+
+/* ============================================================================
+   BACKGROUND ORBS
+   ============================================================================ */
+
+.bg-orb {
+  position: absolute;
+
+  width: 420px;
+  height: 420px;
+
+  border-radius: 50%;
+
+  background:
+    rgba(255, 70, 22, 0.08);
+
+  filter: blur(100px);
+
+  pointer-events: none;
+
+  opacity: 0.65;
+}
+
+
+.bg-orb-left {
+  left: -220px;
+  top: 20%;
+}
+
+
+.bg-orb-right {
+  right: -220px;
+  top: 45%;
+}
+
+
+/* ============================================================================
+   GRID BACKGROUND
+   ============================================================================ */
+
+.grid-background {
+  background-image:
+    linear-gradient(
+      rgba(255, 255, 255, 0.025) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.025) 1px,
+      transparent 1px
+    );
+
+  background-size:
+    50px 50px;
+
+  mask-image:
+    linear-gradient(
+      to bottom,
+      black,
+      transparent 85%
+    );
+
+  -webkit-mask-image:
+    linear-gradient(
+      to bottom,
+      black,
+      transparent 85%
+    );
+}
+
+
+/* ============================================================================
+   FORM ELEMENTS
+   ============================================================================ */
+
+.input {
+  width: 100%;
+
+  min-height: 50px;
+
+  padding:
+    0 15px;
+
+  border:
+    1px solid var(--border);
+
+  border-radius: 11px;
+
+  background:
+    rgba(255, 255, 255, 0.035);
+
+  color: var(--foreground);
+
+  outline: none;
+
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+
+.input::placeholder {
+  color: var(--muted-dark);
+}
+
+
+.input:hover {
+  border-color:
+    rgba(255, 255, 255, 0.15);
+}
+
+
+.input:focus {
+  border-color: var(--primary);
+
+  background:
+    rgba(255, 255, 255, 0.05);
+
+  box-shadow:
+    0 0 0 3px
+    rgba(255, 70, 22, 0.10);
+}
+
+
+/* ============================================================================
+   TEXT UTILITIES
+   ============================================================================ */
+
+.text-primary {
+  color: var(--primary);
+}
+
+
+.text-muted {
+  color: var(--muted);
+}
+
+
+.text-success {
+  color: var(--success);
+}
+
+
+.text-danger {
+  color: var(--danger);
+}
+
+
+/* ============================================================================
+   DIVIDER
+   ============================================================================ */
+
+.divider {
+  width: 100%;
+  height: 1px;
+
+  background:
+    var(--border);
+}
+
+
+/* ============================================================================
+   ANIMATIONS
+   ============================================================================ */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0
+      rgba(255, 70, 22, 0);
+  }
+
+  50% {
+    box-shadow:
+      0 0 35px
+      rgba(255, 70, 22, 0.18);
+  }
+}
+
+
+.animate-fade-in {
+  animation:
+    fadeIn 500ms ease both;
+}
+
+
+.animate-fade-up {
+  animation:
+    fadeUp 600ms ease both;
+}
+
+
+.animate-float {
+  animation:
+    float 4s ease-in-out infinite;
+}
+
+
+.animate-pulse-glow {
+  animation:
+    pulseGlow 2.5s ease-in-out infinite;
+}
+
+
+/* ============================================================================
+   RESPONSIVE
+   ============================================================================ */
+
+@media (max-width: 900px) {
+
+  .section {
+    padding: 80px 0;
+  }
+
+  .section-lg {
+    padding: 100px 0;
+  }
+
+  .container {
+    width:
+      min(
+        calc(100% - 32px),
+        var(--container)
+      );
+  }
+}
+
+
+@media (max-width: 640px) {
+
+  .section {
+    padding: 64px 0;
+  }
+
+  .section-sm {
+    padding: 50px 0;
+  }
+
+  .section-lg {
+    padding: 76px 0;
+  }
+
+  .container {
+    width:
+      calc(100% - 28px);
+  }
+
+  .section-title {
+    font-size: 34px;
+  }
+
+  .section-description {
+    font-size: 15px;
+  }
+
+  .btn {
+    min-height: 46px;
+
+    padding:
+      0 18px;
+
+    font-size: 14px;
+  }
+
+  .bg-orb {
+    width: 280px;
+    height: 280px;
+
+    filter: blur(80px);
+  }
+}
+
+
+/* ============================================================================
+   REDUCED MOTION
+   ============================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
