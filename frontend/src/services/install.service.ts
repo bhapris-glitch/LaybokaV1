@@ -8,22 +8,28 @@
  * frontend/src/services/install.service.ts
  *
  * Purpose:
- * - Build Shopify installation URL
+ * - Validate Shopify store URL
+ * - Normalize Shopify store domain
  * - Start Shopify OAuth installation
- * - Validate Shopify store domains
- * - Extract shop parameter
+ * - Check installation status
+ * - Read installation result
+ * - Handle installation errors
  *
- * V1 flow:
+ * V1 installation flow:
  *
  * Frontend
  *    ↓
- * /v1/install?shop=store.myshopify.com
+ * GET /v1/install?shop=example.myshopify.com
  *    ↓
- * Backend
+ * Backend Shopify OAuth
  *    ↓
- * Shopify OAuth
+ * Shopify
  *    ↓
- * /v1/install/callback
+ * GET /v1/install/callback
+ *    ↓
+ * Backend completes installation
+ *    ↓
+ * Frontend dashboard
  *
  * ============================================================================
  */
@@ -52,43 +58,84 @@ export interface InstallResponse {
 
   installed?: boolean;
 
+  token?: string;
+
+  redirect?: string;
+
   [key: string]: unknown;
+}
+
+
+export interface InstallationStatus {
+
+  success?: boolean;
+
+  installed: boolean;
+
+  installStatus:
+    | 'pending'
+    | 'installed'
+    | 'uninstalled'
+    | 'failed'
+    | 'unknown';
+
+  shop?: {
+
+    id?: string;
+
+    domain?: string;
+
+    name?: string;
+
+  };
+
+  aiEnabled?: boolean;
+
+  chatbotEnabled?: boolean;
+
+  subscriptionStatus?: string;
+
+  trialStartedAt?: string | null;
+
+  trialEndsAt?: string | null;
+
+  message?: string;
 
 }
 
 
 export interface InstallOptions {
 
-  /**
-   * Shopify store domain.
-   *
-   * Examples:
-   * - example.myshopify.com
-   * - https://example.myshopify.com
-   * - https://example.com
-   */
   shop: string;
 
 }
 
 
 // ============================================================================
-// SHOP DOMAIN NORMALIZATION
+// NORMALIZE SHOP DOMAIN
 // ============================================================================
 
-function normalizeShopDomain(
-  shop: string
+export function normalizeShop(
+  input: string
 ): string {
 
-  let value =
-    shop.trim().toLowerCase();
+  let shop =
+    input
+      .trim()
+      .toLowerCase();
+
+
+  if (!shop) {
+
+    return '';
+  }
 
 
   /*
    * Remove protocol.
    */
-  value =
-    value.replace(
+  shop =
+    shop.replace(
       /^https?:\/\//,
       ''
     );
@@ -97,37 +144,37 @@ function normalizeShopDomain(
   /*
    * Remove www.
    */
-  value =
-    value.replace(
+  shop =
+    shop.replace(
       /^www\./,
       ''
     );
 
 
   /*
-   * Remove path, query and hash.
+   * Remove path/query/hash.
    */
-  value =
-    value.split('/')[0];
+  shop =
+    shop.split('/')[0];
 
-  value =
-    value.split('?')[0];
+  shop =
+    shop.split('?')[0];
 
-  value =
-    value.split('#')[0];
+  shop =
+    shop.split('#')[0];
 
 
   /*
    * Remove trailing dot.
    */
-  value =
-    value.replace(
+  shop =
+    shop.replace(
       /\.+$/,
       ''
     );
 
 
-  return value;
+  return shop;
 }
 
 
@@ -136,27 +183,27 @@ function normalizeShopDomain(
 // ============================================================================
 
 export function isValidShopDomain(
-  shop: string
+  input: string
 ): boolean {
 
-  const normalized =
-    normalizeShopDomain(
-      shop
+  const shop =
+    normalizeShop(
+      input
     );
 
 
-  if (!normalized) {
+  if (!shop) {
 
     return false;
   }
 
 
   /*
-   * Standard Shopify permanent domain.
+   * Shopify permanent domain.
    */
   if (
-    /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(
-      normalized
+    /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(
+      shop
     )
   ) {
 
@@ -165,29 +212,12 @@ export function isValidShopDomain(
 
 
   /*
-   * Custom domains are accepted by the V1
-   * installation form and resolved by the backend.
+   * Custom domain.
    *
-   * We intentionally keep this validation broad.
+   * The backend can resolve the store to its canonical
+   * Shopify domain where supported.
    */
-  return (
-    /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(
-      normalized
-    )
-  );
-
-}
-
-
-// ============================================================================
-// NORMALIZE SHOP
-// ============================================================================
-
-export function normalizeShop(
-  shop: string
-): string {
-
-  return normalizeShopDomain(
+  return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(
     shop
   );
 
@@ -199,18 +229,18 @@ export function normalizeShop(
 // ============================================================================
 
 export function getShopifyInstallUrl(
-  shop: string
+  input: string
 ): string {
 
-  const normalized =
-    normalizeShopDomain(
-      shop
+  const shop =
+    normalizeShop(
+      input
     );
 
 
   if (
     !isValidShopDomain(
-      normalized
+      shop
     )
   ) {
 
@@ -222,7 +252,7 @@ export function getShopifyInstallUrl(
 
 
   return getInstallApiUrl(
-    normalized
+    shop
   );
 
 }
@@ -237,7 +267,7 @@ export function startInstallation(
 ): void {
 
   const shop =
-    normalizeShopDomain(
+    normalizeShop(
       options.shop
     );
 
@@ -255,28 +285,26 @@ export function startInstallation(
   }
 
 
-  const installUrl =
+  const url =
     getShopifyInstallUrl(
       shop
     );
 
 
   /*
-   * OAuth must be started by browser navigation.
+   * OAuth must use browser navigation.
    *
-   * Do NOT use fetch() here.
-   *
-   * The backend responds with the Shopify OAuth redirect.
+   * Do not use fetch() here.
    */
   window.location.assign(
-    installUrl
+    url
   );
 
 }
 
 
 // ============================================================================
-// INSTALL USING STORE URL
+// INSTALL FROM URL
 // ============================================================================
 
 export function installFromUrl(
@@ -321,6 +349,59 @@ export async function checkBackend():
 
 
 // ============================================================================
+// GET INSTALLATION STATUS
+// ============================================================================
+
+/**
+ * Check whether a Shopify store is installed.
+ *
+ * Backend endpoint to establish:
+ *
+ * GET /v1/install/status?shop=example.myshopify.com
+ *
+ */
+
+export async function getInstallationStatus(
+  input: string
+): Promise<InstallationStatus> {
+
+  const shop =
+    normalizeShop(
+      input
+    );
+
+
+  if (
+    !isValidShopDomain(
+      shop
+    )
+  ) {
+
+    throw new Error(
+      'Please enter a valid Shopify store domain.'
+    );
+
+  }
+
+
+  const response =
+    await apiService.get<InstallationStatus>(
+      API_ENDPOINTS.installStatus,
+      {
+        shop,
+      },
+      {
+        timeout:
+          10_000,
+      }
+    );
+
+
+  return response;
+}
+
+
+// ============================================================================
 // GET SHOP FROM CURRENT URL
 // ============================================================================
 
@@ -330,7 +411,7 @@ export function getShopFromUrl(
 
   if (
     typeof window ===
-    'undefined' &&
+      'undefined' &&
     !url
   ) {
 
@@ -364,7 +445,7 @@ export function getShopFromUrl(
 
 
     const normalized =
-      normalizeShopDomain(
+      normalizeShop(
         shop
       );
 
@@ -384,6 +465,52 @@ export function getShopFromUrl(
 
 
 // ============================================================================
+// GET INSTALL TOKEN
+// ============================================================================
+
+export function getInstallToken(
+  url?: string
+): string | null {
+
+  if (
+    typeof window ===
+      'undefined' &&
+    !url
+  ) {
+
+    return null;
+  }
+
+
+  const source =
+    url ||
+    window.location.href;
+
+
+  try {
+
+    const parsed =
+      new URL(
+        source
+      );
+
+
+    return (
+      parsed.searchParams.get(
+        'token'
+      ) ||
+      null
+    );
+
+  } catch {
+
+    return null;
+  }
+
+}
+
+
+// ============================================================================
 // GET INSTALL ERROR
 // ============================================================================
 
@@ -393,7 +520,7 @@ export function getInstallError(
 
   if (
     typeof window ===
-    'undefined' &&
+      'undefined' &&
     !url
   ) {
 
@@ -458,6 +585,10 @@ export function clearInstallParameters():
   );
 
   url.searchParams.delete(
+    'token'
+  );
+
+  url.searchParams.delete(
     'error'
   );
 
@@ -493,7 +624,11 @@ export const installService = {
 
   checkBackend,
 
+  getInstallationStatus,
+
   getShopFromUrl,
+
+  getInstallToken,
 
   getInstallError,
 
