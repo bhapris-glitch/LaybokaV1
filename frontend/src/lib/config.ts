@@ -9,389 +9,338 @@
  *
  * Purpose:
  * - Centralize frontend configuration
- * - Keep API URLs in one place
- * - Define V1 trial settings
- * - Define V1 pricing
+ * - Define the V1 backend URL
  * - Define API endpoints
+ * - Keep API paths consistent across services
+ *
+ * IMPORTANT:
+ * Only PUBLIC configuration belongs here.
+ *
+ * NEVER put:
+ * - OpenAI API keys
+ * - Shopify API secrets
+ * - Shopify access tokens
+ * - Stripe secret keys
+ * - MongoDB credentials
  *
  * ============================================================================
  */
 
-const normalizeUrl = (url: string): string => {
-  return url.replace(/\/+$/, '');
-};
+// ============================================================================
+// ENVIRONMENT
+// ============================================================================
+
+const rawApiUrl =
+  process.env.NEXT_PUBLIC_API_URL?.trim();
 
 
 // ============================================================================
-// APPLICATION
+// NORMALIZE API URL
 // ============================================================================
 
-export const APP_CONFIG = {
-  name:
-    process.env.NEXT_PUBLIC_APP_NAME ||
-    'Layboka AI',
+function normalizeApiUrl(
+  value?: string
+): string {
 
-  version:
-    process.env.NEXT_PUBLIC_APP_VERSION ||
-    '1.0.0',
+  if (!value) {
 
-  url:
-    normalizeUrl(
-      process.env.NEXT_PUBLIC_APP_URL ||
-      'https://laybokav1.com'
-    ),
+    /*
+     * Development fallback.
+     *
+     * In production, NEXT_PUBLIC_API_URL must be configured
+     * in Vercel.
+     */
 
-  trialDays:
-    Number(
-      process.env.NEXT_PUBLIC_TRIAL_DAYS || '5'
-    ),
-} as const;
+    return 'http://localhost:5000';
+  }
+
+
+  return value
+    .replace(/\/+$/, '');
+}
+
+
+const API_BASE_URL =
+  normalizeApiUrl(
+    rawApiUrl
+  );
 
 
 // ============================================================================
-// BACKEND
+// API CONFIG
 // ============================================================================
 
 export const API_CONFIG = {
+
   baseUrl:
-    normalizeUrl(
-      process.env.NEXT_PUBLIC_API_URL ||
-      'http://localhost:5000'
-    ),
+    API_BASE_URL,
+
+  version:
+    'v1',
 
   timeout:
     30000,
+
+  analyticsTimeout:
+    10000,
+
 } as const;
 
 
 // ============================================================================
-// API BASE
-// ============================================================================
-
-export const API_BASE =
-  `${API_CONFIG.baseUrl}/v1`;
-
-
-// ============================================================================
-// V1 API ENDPOINTS
+// API ENDPOINTS
 // ============================================================================
 //
-// Keep endpoint definitions centralized.
-// If the backend path changes, we update it here instead of searching
-// throughout the entire frontend.
+// IMPORTANT:
+// These paths are relative to /v1.
 //
+// Example:
+//
+// API_BASE_URL = https://api.example.com
+//
+// API_ENDPOINTS.health
+// → https://api.example.com/v1/health
+//
+// ============================================================================
 
 export const API_ENDPOINTS = {
 
   // --------------------------------------------------------------------------
-  // INSTALL / SHOPIFY
-  // --------------------------------------------------------------------------
-
-  install:
-    `${API_BASE}/install`,
-
-  installCallback:
-    `${API_BASE}/install/callback`,
-
-
-  // --------------------------------------------------------------------------
-  // CHAT
-  // --------------------------------------------------------------------------
-
-  chat:
-    `${API_BASE}/chat`,
-
-  chatStatus:
-    `${API_BASE}/chat/status`,
-
-
-  // --------------------------------------------------------------------------
-  // ANALYTICS
-  // --------------------------------------------------------------------------
-
-  analyticsEvent:
-    `${API_BASE}/analytics/event`,
-
-  analyticsEvents:
-    `${API_BASE}/analytics/events`,
-
-  analyticsDashboard:
-    `${API_BASE}/analytics/dashboard`,
-
-  analyticsFunnel:
-    `${API_BASE}/analytics/funnel`,
-
-  analyticsProducts:
-    `${API_BASE}/analytics/products`,
-
-  analyticsDaily:
-    `${API_BASE}/analytics/daily`,
-
-
-  // --------------------------------------------------------------------------
-  // BILLING
-  // --------------------------------------------------------------------------
-
-  billingStatus:
-    `${API_BASE}/billing/status`,
-
-  billingCheckout:
-    `${API_BASE}/billing/checkout`,
-
-
-  // --------------------------------------------------------------------------
-  // WEBHOOKS
-  // --------------------------------------------------------------------------
-
-  webhookStatus:
-    `${API_BASE}/webhooks/status`,
-
-  webhookRegister:
-    `${API_BASE}/webhooks/register`,
-
-
-  // --------------------------------------------------------------------------
-  // HEALTH
+  // Health
   // --------------------------------------------------------------------------
 
   health:
-    `${API_BASE}/health`,
-} as const;
+    '/health',
 
 
-// ============================================================================
-// V1 PRICING
-// ============================================================================
-//
-// Initial global-market V1 pricing.
-//
-// Trial:
-//   5 days
-//
-// Starter:
-//   $9/month
-//   500 AI conversations/month
-//
-// Growth:
-//   $29/month
-//   2,000 AI conversations/month
-//
-// Pro:
-//   $79/month
-//   10,000 AI conversations/month
-//
-// Enterprise:
-//   Custom
-//
-// These values are frontend display values.
-// Actual payment enforcement must happen on the backend.
-//
+  // --------------------------------------------------------------------------
+  // Shopify Installation
+  // --------------------------------------------------------------------------
 
-export const PRICING_PLANS = [
-  {
-    id:
-      'starter',
+  install:
+    `${API_BASE_URL}/v1/install`,
 
-    name:
-      'Starter',
-
-    price:
-      9,
-
-    currency:
-      'USD',
-
-    interval:
-      'month',
-
-    conversations:
-      500,
-
-    description:
-      'For small Shopify stores getting started with AI sales.',
-
-    features: [
-      '24/7 AI Sales Agent',
-      'Shopify product knowledge',
-      'Product recommendations',
-      'Customer Q&A',
-      '500 AI conversations/month',
-      'Basic sales analytics',
-      'Email support',
-    ],
-
-    popular:
-      false,
-  },
-
-  {
-    id:
-      'growth',
-
-    name:
-      'Growth',
-
-    price:
-      29,
-
-    currency:
-      'USD',
-
-    interval:
-      'month',
-
-    conversations:
-      2000,
-
-    description:
-      'For growing stores that want more conversations and sales.',
-
-    features: [
-      'Everything in Starter',
-      '2,000 AI conversations/month',
-      'Advanced product recommendations',
-      'Upsell suggestions',
-      'Cross-sell suggestions',
-      'Conversion analytics',
-      'Priority support',
-    ],
-
-    popular:
-      true,
-  },
-
-  {
-    id:
-      'pro',
-
-    name:
-      'Pro',
-
-    price:
-      79,
-
-    currency:
-      'USD',
-
-    interval:
-      'month',
-
-    conversations:
-      10000,
-
-    description:
-      'For established stores with higher customer volume.',
-
-    features: [
-      'Everything in Growth',
-      '10,000 AI conversations/month',
-      'Advanced sales insights',
-      'Advanced conversion analytics',
-      'Higher usage limits',
-      'Priority support',
-      'Early V2 feature access',
-    ],
-
-    popular:
-      false,
-  },
-
-  {
-    id:
-      'enterprise',
-
-    name:
-      'Enterprise',
-
-    price:
-      null,
-
-    currency:
-      'USD',
-
-    interval:
-      'custom',
-
-    conversations:
-      null,
-
-    description:
-      'For larger businesses with custom requirements.',
-
-    features: [
-      'Everything in Pro',
-      'Custom AI conversation volume',
-      'Custom implementation',
-      'Custom support',
-      'Custom billing',
-    ],
-
-    popular:
-      false,
-  },
-] as const;
+  installStatus:
+    '/install/status',
 
 
-// ============================================================================
-// TRIAL
-// ============================================================================
+  // --------------------------------------------------------------------------
+  // Authentication
+  // --------------------------------------------------------------------------
 
-export const TRIAL_CONFIG = {
+  login:
+    '/auth/login',
 
-  days:
-    APP_CONFIG.trialDays,
+  register:
+    '/auth/register',
 
-  label:
-    `${APP_CONFIG.trialDays}-Day Free Trial`,
+  logout:
+    '/auth/logout',
 
-  description:
-    `Try Layboka AI free for ${APP_CONFIG.trialDays} days.`,
+  me:
+    '/auth/me',
 
-  requiresCard:
-    false,
+
+  // --------------------------------------------------------------------------
+  // Chat / AI Sales Agent
+  // --------------------------------------------------------------------------
+
+  chat:
+    '/chat',
+
+  chatStatus:
+    '/chat/status',
+
+
+  // --------------------------------------------------------------------------
+  // Products
+  // --------------------------------------------------------------------------
+
+  products:
+    '/products',
+
+  featuredProducts:
+    '/products/featured',
+
+
+  // --------------------------------------------------------------------------
+  // Analytics
+  // --------------------------------------------------------------------------
+
+  analyticsEvent:
+    '/analytics/event',
+
+  analyticsEvents:
+    '/analytics/events',
+
+  analyticsDashboard:
+    '/analytics/dashboard',
+
+  analyticsFunnel:
+    '/analytics/funnel',
+
+  analyticsProducts:
+    '/analytics/products',
+
+  analyticsDaily:
+    '/analytics/daily',
+
+
+  // --------------------------------------------------------------------------
+  // Billing
+  // --------------------------------------------------------------------------
+
+  billingStatus:
+    '/billing/status',
+
+  billingCheckout:
+    '/billing/checkout',
+
+  billingPortal:
+    '/billing/portal',
+
+
+  // --------------------------------------------------------------------------
+  // Merchant
+  // --------------------------------------------------------------------------
+
+  merchant:
+    '/merchant',
+
+  merchantSettings:
+    '/merchant/settings',
 
 } as const;
 
 
 // ============================================================================
-// BRAND
+// FULL API URL HELPER
 // ============================================================================
 
-export const BRAND_CONFIG = {
+export function getApiUrl(
+  endpoint: string
+): string {
 
-  primary:
-    '#FF4616',
+  const normalizedEndpoint =
+    endpoint.startsWith('/')
+      ? endpoint
+      : `/${endpoint}`;
 
-  background:
-    '#040501',
 
-  foreground:
-    '#F7F7F5',
+  return (
+    `${API_CONFIG.baseUrl}` +
+    `/v1` +
+    normalizedEndpoint
+  );
+}
+
+
+// ============================================================================
+// INSTALL URL HELPER
+// ============================================================================
+//
+// Unlike normal API requests, this endpoint is intentionally represented
+// as a complete URL because the browser may redirect directly to it.
+//
+
+export function getInstallApiUrl(
+  shop?: string
+): string {
+
+  const url =
+    new URL(
+      `${API_CONFIG.baseUrl}/v1/install`
+    );
+
+
+  if (shop) {
+
+    url.searchParams.set(
+      'shop',
+      shop
+    );
+  }
+
+
+  return url.toString();
+}
+
+
+// ============================================================================
+// APPLICATION CONFIG
+// ============================================================================
+
+export const APP_CONFIG = {
+
+  name:
+    'Layboka AI',
+
+  website:
+    'https://laybokav1.com',
+
+  trialDays:
+    5,
+
+  supportEmail:
+    'support@laybokav1.com',
 
 } as const;
+
+
+// ============================================================================
+// DEVELOPMENT HELPERS
+// ============================================================================
+
+export const IS_DEVELOPMENT =
+  process.env.NODE_ENV ===
+  'development';
+
+
+export const IS_PRODUCTION =
+  process.env.NODE_ENV ===
+  'production';
+
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+/**
+ * Returns true when the application has a configured public API URL.
+ *
+ * localhost is considered valid during development.
+ */
+
+export function hasApiConfiguration(): boolean {
+
+  return Boolean(
+    rawApiUrl
+  );
+}
 
 
 // ============================================================================
 // EXPORT DEFAULT
 // ============================================================================
 
-export default {
-  app:
-    APP_CONFIG,
+const config = {
 
-  api:
-    API_CONFIG,
+  API_CONFIG,
 
-  endpoints:
-    API_ENDPOINTS,
+  API_ENDPOINTS,
 
-  pricing:
-    PRICING_PLANS,
+  APP_CONFIG,
 
-  trial:
-    TRIAL_CONFIG,
+  IS_DEVELOPMENT,
 
-  brand:
-    BRAND_CONFIG,
+  IS_PRODUCTION,
+
+  getApiUrl,
+
+  getInstallApiUrl,
+
+  hasApiConfiguration,
 };
 
+
+export default config;
