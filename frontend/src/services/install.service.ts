@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * Layboka AI — V1
+ * LaybokaV1 — V1
  * Shopify Installation Service
  * ============================================================================
  *
@@ -8,19 +8,27 @@
  * frontend/src/services/install.service.ts
  *
  * Purpose:
- * - Start Shopify installation
- * - Validate Shopify store domain
- * - Build the backend installation URL
- * - Handle installation callback parameters
- * - Keep Shopify OAuth secrets on the backend
+ * - Validate Shopify store input
+ * - Normalize Shopify store domains
+ * - Build the V1 Shopify OAuth installation URL
+ * - Redirect merchant to Shopify
+ * - Read installation callback parameters
+ * - Provide safe installation-status helpers
+ *
+ * Backend V1:
+ *
+ * GET /v1/install?shop=store.myshopify.com
+ * GET /v1/install/callback
  *
  * IMPORTANT:
- * The browser must NEVER receive:
- * - SHOPIFY_API_SECRET
+ * Shopify OAuth is intentionally handled by the backend.
+ *
+ * NEVER expose:
+ * - Shopify API secret
+ * - Shopify access token
  * - OpenAI API key
  * - Stripe secret
  * - MongoDB credentials
- * - Shopify access token
  *
  * ============================================================================
  */
@@ -28,8 +36,8 @@
 'use client';
 
 import {
-  API_CONFIG,
   API_ENDPOINTS,
+  getInstallApiUrl,
 } from '@/lib/config';
 
 import {
@@ -41,29 +49,16 @@ import {
 // TYPES
 // ============================================================================
 
-export interface InstallResponse {
-  success?: boolean;
-
-  message?: string;
-
-  shop?: string;
-
-  redirectUrl?: string;
-
-  authUrl?: string;
-
-  installUrl?: string;
-
-  [key: string]: unknown;
-}
-
-
 export interface InstallationStatus {
   success?: boolean;
 
   installed?: boolean;
 
   shop?: string;
+
+  status?: string;
+
+  message?: string;
 
   trial?: {
     active?: boolean;
@@ -75,160 +70,287 @@ export interface InstallationStatus {
 }
 
 
+export interface InstallCallbackParams {
+  shop?: string;
+
+  installed?: string;
+
+  success?: string;
+
+  trial?: string;
+
+  error?: string;
+
+  errorDescription?: string;
+}
+
+
 export interface ShopifyInstallResult {
   shop: string;
 
-  redirectUrl: string;
+  installUrl: string;
 }
 
 
 // ============================================================================
-// SHOP DOMAIN VALIDATION
+// CONSTANTS
+// ============================================================================
+
+const SHOPIFY_HOST_SUFFIX =
+  '.myshopify.com';
+
+const MAX_SHOP_LENGTH =
+  253;
+
+
+// ============================================================================
+// INTERNAL HELPERS
+// ============================================================================
+
+function removeTrailingSlash(
+  value: string
+): string {
+
+  return value.replace(
+    /\/+$/,
+    ''
+  );
+}
+
+
+function stripProtocol(
+  value: string
+): string {
+
+  return value
+    .replace(
+      /^https?:\/\//i,
+      ''
+    )
+    .trim();
+}
+
+
+function stripPathAndQuery(
+  value: string
+): string {
+
+  return value
+    .split('/')[0]
+    .split('?')[0]
+    .split('#')[0]
+    .trim();
+}
+
+
+// ============================================================================
+// SHOP DOMAIN NORMALIZATION
 // ============================================================================
 
 /**
- * Normalizes a merchant's Shopify store input.
+ * Normalize a merchant's Shopify store input.
  *
- * Supported examples:
+ * Accepted examples:
  *
- * shop-name.myshopify.com
- * https://shop-name.myshopify.com
- * http://shop-name.myshopify.com/
- * https://www.example-store.com
- * example-store.com
+ * store-name.myshopify.com
+ * https://store-name.myshopify.com
+ * http://store-name.myshopify.com/
+ * https://www.store-name.com
+ * store-name.com
  *
- * The final value returned is the hostname only.
+ * Returns hostname only.
+ *
+ * NOTE:
+ * A custom Shopify domain can be entered.
+ * The backend/Shopify OAuth flow remains responsible for determining
+ * whether the domain is actually valid for the Shopify installation.
  */
 
 export function normalizeShopDomain(
   value: string
 ): string {
 
-  const input =
+  if (
+    typeof value !== 'string'
+  ) {
+
+    throw new Error(
+      'Shopify store domain is required.'
+    );
+  }
+
+
+  let input =
     value.trim();
 
 
   if (!input) {
+
     throw new Error(
       'Please enter your Shopify store URL.'
     );
   }
 
 
-  let hostname =
-    input;
-
-
-  // --------------------------------------------------------------------------
-  // Add protocol when missing
-  // --------------------------------------------------------------------------
-
   if (
-    !hostname.startsWith('http://') &&
-    !hostname.startsWith('https://')
+    input.length >
+    MAX_SHOP_LENGTH
   ) {
 
-    hostname =
-      `https://${hostname}`;
-  }
-
-
-  // --------------------------------------------------------------------------
-  // Parse URL
-  // --------------------------------------------------------------------------
-
-  let url: URL;
-
-  try {
-
-    url =
-      new URL(hostname);
-
-  } catch {
-
     throw new Error(
-      'Please enter a valid Shopify store URL.'
+      'The store domain is too long.'
     );
   }
 
 
-  // --------------------------------------------------------------------------
-  // Remove www
-  // --------------------------------------------------------------------------
+  /*
+   * Remove whitespace around the value.
+   */
 
-  let host =
-    url.hostname
-      .toLowerCase()
-      .trim();
+  input =
+    input.trim();
 
 
-  if (
-    host.startsWith('www.')
-  ) {
+  /*
+   * If protocol is present, parse it normally.
+   */
 
-    host =
-      host.substring(4);
+  let hostname: string;
+
+
+  try {
+
+    const valueWithProtocol =
+      /^https?:\/\//i.test(input)
+        ? input
+        : `https://${input}`;
+
+
+    const parsed =
+      new URL(
+        valueWithProtocol
+      );
+
+
+    hostname =
+      parsed.hostname
+        .toLowerCase()
+        .trim();
+
+  } catch {
+
+    /*
+     * Fallback for malformed URL-like input.
+     */
+
+    hostname =
+      stripPathAndQuery(
+        stripProtocol(
+          input
+        )
+      )
+      .toLowerCase();
   }
 
 
-  // --------------------------------------------------------------------------
-  // Remove trailing dot
-  // --------------------------------------------------------------------------
+  /*
+   * Remove www.
+   *
+   * This is useful for custom domains.
+   */
 
-  host =
-    host.replace(
+  if (
+    hostname.startsWith('www.')
+  ) {
+
+    hostname =
+      hostname.substring(4);
+  }
+
+
+  /*
+   * Remove accidental trailing dot.
+   */
+
+  hostname =
+    hostname.replace(
       /\.$/,
       ''
     );
 
 
-  // --------------------------------------------------------------------------
-  // Basic hostname validation
-  // --------------------------------------------------------------------------
+  /*
+   * Reject obviously invalid values.
+   */
 
   if (
-    !host ||
-    !host.includes('.')
+    !hostname ||
+    hostname.length < 3 ||
+    hostname.length > MAX_SHOP_LENGTH
   ) {
 
     throw new Error(
-      'Please enter a valid store domain.'
+      'Please enter a valid Shopify store domain.'
     );
   }
 
 
-  // --------------------------------------------------------------------------
-  // Shopify-hosted store
-  // --------------------------------------------------------------------------
+  /*
+   * Hostname must not contain:
+   *
+   * spaces
+   * protocol
+   * paths
+   * query strings
+   * fragments
+   */
 
   if (
-    host.endsWith(
-      '.myshopify.com'
+    /[\s/:?#]/.test(
+      hostname
     )
   ) {
 
-    return host;
+    throw new Error(
+      'Please enter only your Shopify store domain.'
+    );
   }
 
 
-  // --------------------------------------------------------------------------
-  // Custom Shopify domain
-  // --------------------------------------------------------------------------
-  //
-  // Custom domains are allowed.
-  // The backend will verify that the store is actually associated with
-  // Shopify during the OAuth/install process.
-  //
+  /*
+   * Basic hostname validation.
+   */
 
-  return host;
+  const hostnameRegex =
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+
+  if (
+    !hostnameRegex.test(
+      hostname
+    )
+  ) {
+
+    throw new Error(
+      'Please enter a valid Shopify store domain.'
+    );
+  }
+
+
+  return hostname;
 }
 
 
 // ============================================================================
-// SHOPIFY DOMAIN CHECK
+// SHOPIFY DOMAIN HELPERS
 // ============================================================================
 
-export function isShopifyDomain(
+/**
+ * Returns true when the supplied domain is a Shopify-hosted
+ * *.myshopify.com domain.
+ */
+
+export function isShopifyHostedDomain(
   value: string
 ): boolean {
 
@@ -239,8 +361,13 @@ export function isShopifyDomain(
         value
       );
 
-    return domain.endsWith(
-      '.myshopify.com'
+
+    return (
+      domain.endsWith(
+        SHOPIFY_HOST_SUFFIX
+      ) &&
+      domain.length >
+        SHOPIFY_HOST_SUFFIX.length
     );
 
   } catch {
@@ -250,115 +377,44 @@ export function isShopifyDomain(
 }
 
 
-// ============================================================================
-// START INSTALLATION
-// ============================================================================
-
 /**
- * Starts the Shopify installation flow.
+ * Backward-compatible helper.
  *
- * The backend is responsible for:
- *
- * 1. Validating the shop
- * 2. Creating OAuth state
- * 3. Building Shopify authorization URL
- * 4. Redirecting merchant to Shopify
- *
- * We support two backend response styles:
- *
- * redirectUrl
- * authUrl
- * installUrl
- *
- * This makes the frontend tolerant of the V1 backend implementation.
+ * Custom Shopify domains are also valid Shopify installation inputs,
+ * therefore this function should not be used to reject custom domains.
  */
 
-export async function startShopifyInstall(
-  shopInput: string
-): Promise<ShopifyInstallResult> {
+export function isShopifyDomain(
+  value: string
+): boolean {
 
-  const shop =
+  try {
+
     normalizeShopDomain(
-      shopInput
+      value
     );
 
+    return true;
 
-  const response =
-    await apiService.post<InstallResponse>(
-      '/install',
-      {
-        shop,
-      }
-    );
+  } catch {
 
-
-  const redirectUrl =
-    response.redirectUrl ||
-    response.authUrl ||
-    response.installUrl;
-
-
-  if (
-    !redirectUrl
-  ) {
-
-    throw new Error(
-      response.message ||
-      'Unable to start Shopify installation.'
-    );
+    return false;
   }
-
-
-  return {
-    shop,
-
-    redirectUrl,
-  };
 }
 
 
 // ============================================================================
-// REDIRECT TO SHOPIFY
-// ============================================================================
-
-export async function redirectToShopify(
-  shopInput: string
-): Promise<void> {
-
-  const {
-    redirectUrl,
-  } =
-    await startShopifyInstall(
-      shopInput
-    );
-
-
-  /*
-   * OAuth URLs come from our trusted backend.
-   *
-   * We use a full browser redirect because Shopify OAuth
-   * needs to leave the application.
-   */
-
-  window.location.assign(
-    redirectUrl
-  );
-}
-
-
-// ============================================================================
-// DIRECT INSTALL URL
+// INSTALL URL
 // ============================================================================
 
 /**
- * Returns the backend installation endpoint.
+ * Build the backend Shopify installation URL.
  *
- * This is useful when the landing page wants to redirect directly
- * to the backend instead of making an AJAX request first.
+ * Actual V1 backend endpoint:
  *
- * Example:
+ * GET /v1/install?shop=store.myshopify.com
  *
- * https://backend.example.com/v1/install?shop=store.myshopify.com
+ * The backend responds with a Shopify OAuth redirect.
  */
 
 export function getInstallUrl(
@@ -371,19 +427,106 @@ export function getInstallUrl(
     );
 
 
-  const url =
-    new URL(
-      API_ENDPOINTS.install
+  return getInstallApiUrl(
+    shop
+  );
+}
+
+
+// ============================================================================
+// START INSTALLATION
+// ============================================================================
+
+/**
+ * Prepare the Shopify installation flow.
+ *
+ * IMPORTANT:
+ *
+ * We do NOT use Axios here.
+ *
+ * The backend installation endpoint returns an HTTP redirect to Shopify.
+ * Using window.location.assign() lets the browser follow the complete
+ * OAuth flow correctly.
+ */
+
+export function startShopifyInstall(
+  shopInput: string
+): ShopifyInstallResult {
+
+  const shop =
+    normalizeShopDomain(
+      shopInput
     );
 
 
-  url.searchParams.set(
-    'shop',
-    shop
+  const installUrl =
+    getInstallUrl(
+      shop
+    );
+
+
+  return {
+    shop,
+
+    installUrl,
+  };
+}
+
+
+// ============================================================================
+// REDIRECT TO SHOPIFY
+// ============================================================================
+
+/**
+ * Redirect the merchant to the V1 backend installation endpoint.
+ *
+ * The backend then:
+ *
+ * 1. Validates the shop
+ * 2. Creates OAuth state
+ * 3. Builds Shopify authorization URL
+ * 4. Redirects merchant to Shopify
+ */
+
+export function redirectToShopify(
+  shopInput: string
+): void {
+
+  const {
+    installUrl,
+  } =
+    startShopifyInstall(
+      shopInput
+    );
+
+
+  /*
+   * Save only the non-sensitive shop domain.
+   *
+   * This can help the callback/success UI remember which store
+   * the merchant was installing.
+   */
+
+  try {
+
+    window.sessionStorage.setItem(
+      'layboka_v1_install_shop',
+      normalizeShopDomain(
+        shopInput
+      )
+    );
+
+  } catch {
+    /*
+     * Storage may be unavailable in privacy-restricted browsers.
+     * Installation itself must still continue.
+     */
+  }
+
+
+  window.location.assign(
+    installUrl
   );
-
-
-  return url.toString();
 }
 
 
@@ -392,28 +535,37 @@ export function getInstallUrl(
 // ============================================================================
 
 /**
- * Checks the current installation/trial status.
+ * Check installation status.
  *
- * The exact authentication mechanism remains backend-controlled.
+ * This helper is intentionally kept separate from the installation
+ * redirect flow.
+ *
+ * If the backend does not expose a status endpoint in the current
+ * V1 deployment, callers should handle the resulting 404 gracefully.
  */
 
 export async function getInstallationStatus(
-  shop?: string
+  shopInput?: string
 ): Promise<InstallationStatus> {
+
+  const shop =
+    shopInput
+      ? normalizeShopDomain(
+          shopInput
+        )
+      : undefined;
+
 
   const params =
     shop
       ? {
-          shop:
-            normalizeShopDomain(
-              shop
-            ),
+          shop,
         }
       : undefined;
 
 
-  return await apiService.get<InstallationStatus>(
-    '/install/status',
+  return apiService.get<InstallationStatus>(
+    API_ENDPOINTS.installStatus,
     {
       params,
     }
@@ -422,24 +574,19 @@ export async function getInstallationStatus(
 
 
 // ============================================================================
-// CALLBACK HELPERS
+// CALLBACK PARAMETERS
 // ============================================================================
 
-export interface InstallCallbackParams {
-  shop?: string;
-
-  success?: string;
-
-  error?: string;
-
-  errorDescription?: string;
-
-  trial?: string;
-}
-
-
 /**
- * Reads Shopify/backend callback parameters from the browser URL.
+ * Read installation callback parameters from the current browser URL.
+ *
+ * Example success URL:
+ *
+ * /success?shop=store.myshopify.com&installed=true
+ *
+ * Example error:
+ *
+ * /install?error=access_denied
  */
 
 export function getInstallCallbackParams():
@@ -462,25 +609,66 @@ export function getInstallCallbackParams():
   return {
 
     shop:
-      params.get('shop') ||
+      params.get(
+        'shop'
+      ) ||
+      undefined,
+
+    installed:
+      params.get(
+        'installed'
+      ) ||
       undefined,
 
     success:
-      params.get('success') ||
-      undefined,
-
-    error:
-      params.get('error') ||
-      undefined,
-
-    errorDescription:
-      params.get('error_description') ||
+      params.get(
+        'success'
+      ) ||
       undefined,
 
     trial:
-      params.get('trial') ||
+      params.get(
+        'trial'
+      ) ||
+      undefined,
+
+    error:
+      params.get(
+        'error'
+      ) ||
+      undefined,
+
+    errorDescription:
+      params.get(
+        'error_description'
+      ) ||
+      params.get(
+        'errorDescription'
+      ) ||
       undefined,
   };
+}
+
+
+// ============================================================================
+// CALLBACK SUCCESS
+// ============================================================================
+
+export function isInstallSuccessful(
+  params?: InstallCallbackParams
+): boolean {
+
+  const callback =
+    params ||
+    getInstallCallbackParams();
+
+
+  return (
+    callback.installed ===
+      'true' ||
+    callback.success ===
+      'true'
+  );
 }
 
 
@@ -489,49 +677,137 @@ export function getInstallCallbackParams():
 // ============================================================================
 
 export function getInstallErrorMessage(
-  params:
+  params?:
     InstallCallbackParams
 ): string | null {
 
+  const callback =
+    params ||
+    getInstallCallbackParams();
+
+
   if (
-    !params.error
+    !callback.error
   ) {
 
     return null;
   }
 
 
-  return (
-    params.errorDescription ||
-    params.error ||
-    'Shopify installation could not be completed.'
-  );
+  /*
+   * Decode common URL-encoded error text safely.
+   */
+
+  const rawMessage =
+    callback.errorDescription ||
+    callback.error;
+
+
+  try {
+
+    return decodeURIComponent(
+      rawMessage
+    );
+
+  } catch {
+
+    return rawMessage;
+  }
 }
 
 
 // ============================================================================
-// EXPORT DEFAULT
+// STORED SHOP
+// ============================================================================
+
+/**
+ * Return the shop saved before installation.
+ */
+
+export function getStoredInstallShop():
+  string | null {
+
+  if (
+    typeof window === 'undefined'
+  ) {
+
+    return null;
+  }
+
+
+  try {
+
+    return (
+      window.sessionStorage.getItem(
+        'layboka_v1_install_shop'
+      ) ||
+      null
+    );
+
+  } catch {
+
+    return null;
+  }
+}
+
+
+/**
+ * Remove the temporary installation shop value.
+ */
+
+export function clearStoredInstallShop():
+  void {
+
+  if (
+    typeof window === 'undefined'
+  ) {
+
+    return;
+  }
+
+
+  try {
+
+    window.sessionStorage.removeItem(
+      'layboka_v1_install_shop'
+    );
+
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+
+// ============================================================================
+// DEFAULT EXPORT
 // ============================================================================
 
 const installService = {
 
   normalizeShopDomain,
 
+  isShopifyHostedDomain,
+
   isShopifyDomain,
+
+  getInstallUrl,
 
   startShopifyInstall,
 
   redirectToShopify,
 
-  getInstallUrl,
-
   getInstallationStatus,
 
   getInstallCallbackParams,
 
+  isInstallSuccessful,
+
   getInstallErrorMessage,
+
+  getStoredInstallShop,
+
+  clearStoredInstallShop,
 };
 
 
 export default installService;
-
