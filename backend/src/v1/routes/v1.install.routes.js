@@ -10,28 +10,39 @@
  * Purpose:
  * - Shopify installation entry point
  * - Shopify OAuth callback
+ * - Shopify installation status
  *
  * Endpoints:
+ *
  * GET /v1/install
  * GET /v1/install/callback
+ * GET /v1/install/status
+ *
  * ============================================================================
  */
 
 'use strict';
 
-const express = require('express');
+const express =
+  require('express');
+
 
 const {
   startInstallation,
-  handleCallback
-} = require('../controllers/v1.install.controller');
+  handleCallback,
+  getInstallationStatus,
+} =
+  require(
+    '../controllers/v1.install.controller'
+  );
 
 
 // ============================================================================
 // ROUTER
 // ============================================================================
 
-const router = express.Router();
+const router =
+  express.Router();
 
 
 // ============================================================================
@@ -42,8 +53,11 @@ const router = express.Router();
  * Start Shopify installation.
  *
  * Example:
+ *
  * GET /v1/install?shop=example.myshopify.com
+ *
  */
+
 router.get(
   '/install',
   startInstallation
@@ -58,7 +72,9 @@ router.get(
  * Shopify OAuth callback.
  *
  * Shopify redirects here after merchant authorization.
+ *
  */
+
 router.get(
   '/install/callback',
   handleCallback
@@ -66,7 +82,38 @@ router.get(
 
 
 // ============================================================================
+// INSTALLATION STATUS
+// ============================================================================
+
+/**
+ * Check whether a Shopify store is installed.
+ *
+ * Example:
+ *
+ * GET /v1/install/status?shop=example.myshopify.com
+ *
+ * Response:
+ *
+ * {
+ *   "success": true,
+ *   "installed": true,
+ *   "installStatus": "installed",
+ *   "shop": {
+ *     "domain": "example.myshopify.com"
+ *   }
+ * }
+ *
+ */
+
+router.get(
+  '/install/status',
+  getInstallationStatus
+);
+
+
+// ============================================================================
 // EXPORT
 // ============================================================================
 
-module.exports = router;
+module.exports =
+  router;
