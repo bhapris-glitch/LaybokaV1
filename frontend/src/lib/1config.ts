@@ -202,7 +202,31 @@ export const API_ENDPOINTS = {
   installCallback:
     `${API_V1}/install/callback`,
 
+installStatus:
+  `${API_V1}/install/status`,
+  
+ // ================================================
+  // Analytics
+  // =================================================
+  
+analyticsEvent:
+  `${API_V1}/analytics/event`,
 
+analyticsEvents:
+  `${API_V1}/analytics/events`,
+
+analyticsDashboard:
+  `${API_V1}/analytics/dashboard`,
+
+analyticsFunnel:
+  `${API_V1}/analytics/funnel`,
+
+analyticsProducts:
+  `${API_V1}/analytics/products`,
+
+analyticsDaily:
+  `${API_V1}/analytics/daily`,
+  
   // --------------------------------------------------------------------------
   // Chat
   // --------------------------------------------------------------------------
@@ -210,7 +234,9 @@ export const API_ENDPOINTS = {
   chat:
     `${API_V1}/chat`,
 
-
+  chatStatus:
+  `${API_V1}/chat/status`,
+  
   // --------------------------------------------------------------------------
   // Products
   // --------------------------------------------------------------------------
@@ -237,6 +263,10 @@ export const API_ENDPOINTS = {
 
   billingCancel:
     `${API_V1}/billing/cancel`,
+
+  billingStatus:
+  `${API_V1}/billing/status`,
+  
 
 
   // --------------------------------------------------------------------------
