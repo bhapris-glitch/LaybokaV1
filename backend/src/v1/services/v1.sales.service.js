@@ -869,7 +869,7 @@ function getObjectionResponseStrategy(
 
       strategy: [
         'Ask one useful qualification question.',
-        'Clarify the customer's primary need.',
+        'Clarify the customers primary need.',
         'Recommend the most relevant product.',
         'Keep the choice simple.',
       ],
